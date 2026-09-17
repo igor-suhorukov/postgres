@@ -115,6 +115,22 @@ extern void addNSItemToQuery(ParseState *pstate, ParseNamespaceItem *nsitem,
 pg_noreturn extern void errorMissingRTE(ParseState *pstate, RangeVar *relation);
 pg_noreturn extern void errorMissingColumn(ParseState *pstate,
 										   const char *relname, const char *colname, int location);
+
+/*
+ * Hook for an extension to keep columns of a relation it manages out of "*"
+ * expansion, for example counters it maintains in a materialized view of its
+ * own.  It is called once per expansion of a relation's columns in a target
+ * list, which is where "*" and "rel.*" are expanded, and returns the
+ * attribute numbers to leave out, or NULL to leave out none; the set has to
+ * stay valid until the expansion is finished.
+ *
+ * The columns still exist: they can be selected by name, and a whole-row
+ * reference still has them, because its value has the relation's composite
+ * type and every field of that type belongs to it.
+ */
+typedef Bitmapset *(*star_expansion_filter_hook_type) (Oid relid);
+extern PGDLLIMPORT star_expansion_filter_hook_type star_expansion_filter_hook;
+
 extern void expandRTE(RangeTblEntry *rte, int rtindex, int sublevels_up,
 					  VarReturningType returning_type,
 					  int location, bool include_dropped,

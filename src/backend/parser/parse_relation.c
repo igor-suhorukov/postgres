@@ -35,6 +35,10 @@
 #include "utils/varlena.h"
 
 
+/* Hook for an extension to keep its own columns out of "*" expansion */
+star_expansion_filter_hook_type star_expansion_filter_hook = NULL;
+
+
 /*
  * Support for fuzzily matching columns.
  *
@@ -3321,8 +3325,14 @@ expandNSItemAttrs(ParseState *pstate, ParseNamespaceItem *nsitem,
 	ListCell   *name,
 			   *var;
 	List	   *te_list = NIL;
+	Bitmapset  *omitted = NULL;
 
 	vars = expandNSItemVars(pstate, nsitem, sublevels_up, location, &names);
+
+	/* An extension may keep columns of its own out of the expansion */
+	if (unlikely(star_expansion_filter_hook != NULL) &&
+		rte->rtekind == RTE_RELATION)
+		omitted = star_expansion_filter_hook(rte->relid);
 
 	/*
 	 * Require read access to the table.  This is normally redundant with the
@@ -3343,6 +3353,10 @@ expandNSItemAttrs(ParseState *pstate, ParseNamespaceItem *nsitem,
 		char	   *label = strVal(lfirst(name));
 		Var		   *varnode = (Var *) lfirst(var);
 		TargetEntry *te;
+
+		if (unlikely(omitted != NULL) &&
+			bms_is_member(varnode->varattno, omitted))
+			continue;
 
 		te = makeTargetEntry((Expr *) varnode,
 							 (AttrNumber) pstate->p_next_resno++,
