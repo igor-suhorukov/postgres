@@ -427,6 +427,30 @@ extern void parallel_vacuum_propagate_shared_delay_params(void);
 extern void parallel_vacuum_main(dsm_segment *seg, shm_toc *toc);
 
 /* in commands/analyze.c */
+
+/*
+ * AnalyzeSampleRowsFunc has the signature of AcquireSampleRowsFunc in
+ * foreign/fdwapi.h, spelled out here so that this header need not include it.
+ */
+typedef int (*AnalyzeSampleRowsFunc) (Relation relation, int elevel,
+									  HeapTuple *rows, int targrows,
+									  double *totalrows,
+									  double *totaldeadrows);
+
+/*
+ * Hook for an extension to sample a relation itself, as a foreign data
+ * wrapper does through AnalyzeForeignTable.  An extension that keeps the
+ * rows of a table on other servers can use it so that ANALYZE computes the
+ * statistics of that table, including the kinds a data type of its own
+ * defines, from rows the extension supplies.  The hook fills *func and
+ * *totalpages and returns true, or returns false to leave the relation to
+ * ANALYZE.
+ */
+typedef bool (*analyze_sample_rows_hook_type) (Relation relation,
+											   AnalyzeSampleRowsFunc *func,
+											   BlockNumber *totalpages);
+extern PGDLLIMPORT analyze_sample_rows_hook_type analyze_sample_rows_hook;
+
 extern void analyze_rel(Oid relid, RangeVar *relation,
 						const VacuumParams *params, List *va_cols, bool in_outer_xact,
 						BufferAccessStrategy bstrategy);

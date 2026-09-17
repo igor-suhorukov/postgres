@@ -70,6 +70,9 @@ typedef struct AnlIndexData
 /* Default statistics target (GUC parameter) */
 int			default_statistics_target = 100;
 
+/* Hook for an extension to sample a relation itself */
+analyze_sample_rows_hook_type analyze_sample_rows_hook = NULL;
+
 /* A few variables that don't seem worth passing around as parameters */
 static MemoryContext anl_context = NULL;
 static BufferAccessStrategy vac_strategy;
@@ -209,8 +212,13 @@ analyze_rel(Oid relid, RangeVar *relation,
 	/*
 	 * Check that it's of an analyzable relkind, and set up appropriately.
 	 */
-	if (onerel->rd_rel->relkind == RELKIND_RELATION ||
-		onerel->rd_rel->relkind == RELKIND_MATVIEW)
+	if (unlikely(analyze_sample_rows_hook != NULL) &&
+		analyze_sample_rows_hook(onerel, &acquirefunc, &relpages))
+	{
+		/* An extension samples this relation and told us its size */
+	}
+	else if (onerel->rd_rel->relkind == RELKIND_RELATION ||
+			 onerel->rd_rel->relkind == RELKIND_MATVIEW)
 	{
 		/* Regular table, so we'll use the regular row acquisition function */
 		acquirefunc = acquire_sample_rows;
@@ -1528,8 +1536,13 @@ acquire_inherited_sample_rows(Relation onerel, int elevel,
 		}
 
 		/* Check table type (MATVIEW can't happen, but might as well allow) */
-		if (childrel->rd_rel->relkind == RELKIND_RELATION ||
-			childrel->rd_rel->relkind == RELKIND_MATVIEW)
+		if (unlikely(analyze_sample_rows_hook != NULL) &&
+			analyze_sample_rows_hook(childrel, &acquirefunc, &relpages))
+		{
+			/* An extension samples this child and told us its size */
+		}
+		else if (childrel->rd_rel->relkind == RELKIND_RELATION ||
+				 childrel->rd_rel->relkind == RELKIND_MATVIEW)
 		{
 			/* Regular table, so use the regular row acquisition function */
 			acquirefunc = acquire_sample_rows;
