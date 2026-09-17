@@ -976,6 +976,14 @@ index_create(Relation heapRelation,
 		{
 			indexRelationId =
 				GetNewRelFileNumber(tableSpaceId, pg_class, relpersistence);
+
+			/* see heap_create_with_catalog() */
+			if (unlikely(new_oid_hook != NULL) &&
+				LastNewOidWasPreassigned() &&
+				RELKIND_HAS_STORAGE(relkind) &&
+				!RelFileNumberIsValid(relFileNumber))
+				relFileNumber = GetNewRelFileNumber(tableSpaceId, NULL,
+													relpersistence);
 		}
 	}
 

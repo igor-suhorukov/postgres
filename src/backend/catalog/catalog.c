@@ -55,6 +55,15 @@
 #define GETNEWOID_LOG_THRESHOLD 1000000
 #define GETNEWOID_LOG_MAX_INTERVAL 128000000
 
+/* Hook for an extension to supply new OIDs */
+new_oid_hook_type new_oid_hook = NULL;
+
+/*
+ * Did new_oid_hook supply the OID that GetNewOidWithIndex() returned last?
+ * Only maintained while the hook is set; read with LastNewOidWasPreassigned().
+ */
+static bool last_oid_preassigned = false;
+
 /*
  * IsSystemRelation
  *		True iff the relation is either a system catalog or a toast table.
@@ -442,6 +451,9 @@ IsPinnedObject(Oid classId, Oid objectId)
  * consecutive existing OIDs.  This is a mostly reasonable assumption for
  * system catalogs.
  *
+ * If new_oid_hook is set and supplies an OID, that OID is returned as is and
+ * LastNewOidWasPreassigned() is true until the next call.
+ *
  * Caller must have a suitable lock on the relation.
  */
 Oid
@@ -468,6 +480,15 @@ GetNewOidWithIndex(Relation relation, Oid indexId, AttrNumber oidcolumn)
 	 * ensure that a type OID is determined by commands in the dump script.
 	 */
 	Assert(!IsBinaryUpgrade || RelationGetRelid(relation) != TypeRelationId);
+
+	/* Let an extension supply the OID */
+	if (unlikely(new_oid_hook != NULL))
+	{
+		newOid = new_oid_hook(relation, indexId, oidcolumn);
+		last_oid_preassigned = OidIsValid(newOid);
+		if (last_oid_preassigned)
+			return newOid;
+	}
 
 	/* Generate new OIDs until we find one not in the table */
 	do
@@ -538,6 +559,21 @@ GetNewOidWithIndex(Relation relation, Oid indexId, AttrNumber oidcolumn)
 }
 
 /*
+ * LastNewOidWasPreassigned
+ *		Did new_oid_hook supply the OID that GetNewOidWithIndex() returned
+ *		most recently?
+ *
+ * A relation OID that the hook supplied was not checked against existing
+ * files, so the caller has to give the relation a relfilenumber of its own;
+ * see GetNewRelFileNumber() and its callers.
+ */
+bool
+LastNewOidWasPreassigned(void)
+{
+	return new_oid_hook != NULL && last_oid_preassigned;
+}
+
+/*
  * GetNewRelFileNumber
  *		Generate a new relfilenumber that is unique within the
  *		database of the given tablespace.
@@ -546,6 +582,11 @@ GetNewOidWithIndex(Relation relation, Oid indexId, AttrNumber oidcolumn)
  * opened pg_class catalog, and this routine will guarantee that the result
  * is also an unused OID within pg_class.  If the result is to be used only
  * as a relfilenumber for an existing relation, pass NULL for pg_class.
+ *
+ * The exception is an OID that new_oid_hook supplied: it is returned without
+ * looking for a file of that number, because there is no other OID we may
+ * return instead.  LastNewOidWasPreassigned() then tells the caller that it
+ * must take the relfilenumber from a second call with a NULL pg_class.
  *
  * As with GetNewOidWithIndex(), there is some theoretical risk of a race
  * condition, but it doesn't seem worth worrying about.
@@ -605,6 +646,11 @@ GetNewRelFileNumber(Oid reltablespace, Relation pg_class, char relpersistence)
 															Anum_pg_class_oid);
 		else
 			rlocator.locator.relNumber = GetNewObjectId();
+
+		/* An OID from new_oid_hook is used as is; see above */
+		if (unlikely(new_oid_hook != NULL) && pg_class != NULL &&
+			last_oid_preassigned)
+			break;
 
 		/* Check for existing file of same name */
 		rpath = relpath(rlocator, MAIN_FORKNUM);
