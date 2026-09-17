@@ -26,6 +26,9 @@
 #include "parser/parser.h"
 #include "parser/scansup.h"
 
+/* Hook for an extension to parse the statement itself */
+raw_parser_hook_type raw_parser_hook = NULL;
+
 static bool check_uescapechar(unsigned char escape);
 static char *str_udeescape(const char *str, char escape,
 						   int position, core_yyscan_t yyscanner);
@@ -40,6 +43,15 @@ static char *str_udeescape(const char *str, char escape,
  */
 List *
 raw_parser(const char *str, RawParseMode mode)
+{
+	if (unlikely(raw_parser_hook != NULL))
+		return raw_parser_hook(str, mode);
+
+	return standard_raw_parser(str, mode);
+}
+
+List *
+standard_raw_parser(const char *str, RawParseMode mode)
 {
 	core_yyscan_t yyscanner;
 	base_yy_extra_type yyextra;

@@ -56,8 +56,20 @@ typedef enum
 extern PGDLLIMPORT int backslash_quote;
 
 
+/*
+ * Hook for an extension to parse the statement itself, for example with a
+ * grammar of its own that accepts syntax PostgreSQL does not.  What it
+ * returns has to be the raw parse trees PostgreSQL's own grammar produces,
+ * and it can hand a statement back to standard_raw_parser() unchanged.  Note
+ * that PL/pgSQL and type-name parsing go through raw_parser() too, which is
+ * why the hook is told which parse mode it is in.
+ */
+typedef List *(*raw_parser_hook_type) (const char *str, RawParseMode mode);
+extern PGDLLIMPORT raw_parser_hook_type raw_parser_hook;
+
 /* Primary entry point for the raw parsing functions */
 extern List *raw_parser(const char *str, RawParseMode mode);
+extern List *standard_raw_parser(const char *str, RawParseMode mode);
 
 /* Utility functions exported by gram.y (perhaps these should be elsewhere) */
 extern List *SystemFuncName(char *name);
