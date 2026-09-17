@@ -967,3 +967,24 @@ CloseMatViewIncrementalMaintenance(void)
 	matview_maintenance_depth--;
 	Assert(matview_maintenance_depth >= 0);
 }
+
+/*
+ * Entry points to the above for an extension that maintains a materialized
+ * view incrementally, applying the changes of its base tables with ordinary
+ * DML, which the executor refuses outside maintenance mode.  Nothing lowers
+ * the depth when a transaction aborts, so an extension that opens it closes
+ * it on the way out of an error too, where it had opened it; every other
+ * opener, REFRESH ... CONCURRENTLY included, has put its own depth back by
+ * then, so the depth ends as it was found.
+ */
+void
+OpenMatViewIncrementalMaintenanceExternal(void)
+{
+	OpenMatViewIncrementalMaintenance();
+}
+
+void
+CloseMatViewIncrementalMaintenanceExternal(void)
+{
+	CloseMatViewIncrementalMaintenance();
+}
