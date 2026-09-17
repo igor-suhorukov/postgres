@@ -84,6 +84,10 @@ static int	sizeComboCids = 0;	/* allocated size of array */
 /* Initial size of the array */
 #define CCID_ARRAY_SIZE			100
 
+/* Hooks for extensions to publish and to resolve combo CIDs */
+combocid_create_hook_type combocid_create_hook = NULL;
+combocid_miss_hook_type combocid_miss_hook = NULL;
+
 
 /* prototypes for internal functions */
 static CommandId GetComboCommandId(CommandId cmin, CommandId cmax);
@@ -272,12 +276,26 @@ GetComboCommandId(CommandId cmin, CommandId cmax)
 
 	entry->combocid = combocid;
 
+	/* Let an extension publish the new entry */
+	if (unlikely(combocid_create_hook != NULL))
+		combocid_create_hook(combocid, cmin, cmax);
+
 	return combocid;
 }
 
 static CommandId
 GetRealCmin(CommandId combocid)
 {
+	/* Let an extension resolve a combo CID we don't have */
+	if (unlikely(combocid_miss_hook != NULL) && combocid >= usedComboCids)
+	{
+		CommandId	cmin;
+		CommandId	cmax;
+
+		if (combocid_miss_hook(combocid, &cmin, &cmax))
+			return cmin;
+	}
+
 	Assert(combocid < usedComboCids);
 	return comboCids[combocid].cmin;
 }
@@ -285,6 +303,16 @@ GetRealCmin(CommandId combocid)
 static CommandId
 GetRealCmax(CommandId combocid)
 {
+	/* Let an extension resolve a combo CID we don't have */
+	if (unlikely(combocid_miss_hook != NULL) && combocid >= usedComboCids)
+	{
+		CommandId	cmin;
+		CommandId	cmax;
+
+		if (combocid_miss_hook(combocid, &cmin, &cmax))
+			return cmax;
+	}
+
 	Assert(combocid < usedComboCids);
 	return comboCids[combocid].cmax;
 }
