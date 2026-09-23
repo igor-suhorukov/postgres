@@ -18,6 +18,16 @@
 /* GUC parameters */
 extern PGDLLIMPORT bool Transform_null_equals;
 
+/*
+ * Hook for an extension to give a column reference that names no column, and
+ * that no PostParseColumnRefHook resolved, a meaning of its own: an
+ * expression, or NULL to have the reference reported as missing.  It is
+ * consulted only where the parser would otherwise raise that error.
+ */
+typedef Node *(*columnref_fallback_hook_type) (ParseState *pstate,
+											   ColumnRef *cref);
+extern PGDLLIMPORT columnref_fallback_hook_type columnref_fallback_hook;
+
 extern Node *transformExpr(ParseState *pstate, Node *expr, ParseExprKind exprKind);
 
 extern const char *ParseExprKindName(ParseExprKind exprKind);

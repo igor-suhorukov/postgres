@@ -44,6 +44,9 @@
 /* GUC parameters */
 bool		Transform_null_equals = false;
 
+/* Hook for a plugin to resolve a column reference nothing else resolved */
+columnref_fallback_hook_type columnref_fallback_hook = NULL;
+
 
 static Node *transformExprRecurse(ParseState *pstate, Node *expr);
 static Node *transformParamRef(ParseState *pstate, ParamRef *pref);
@@ -847,6 +850,10 @@ transformColumnRef(ParseState *pstate, ColumnRef *cref)
 							NameListToString(cref->fields)),
 					 parser_errposition(pstate, cref->location)));
 	}
+
+	/* Last, offer a reference nothing resolved to the fallback hook */
+	if (node == NULL && unlikely(columnref_fallback_hook != NULL))
+		node = columnref_fallback_hook(pstate, cref);
 
 	/*
 	 * Throw error if no translation found.

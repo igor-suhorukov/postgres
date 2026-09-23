@@ -338,6 +338,15 @@ static const char *const query_getviewrule = "SELECT * FROM pg_catalog.pg_rewrit
 /* GUC parameters */
 bool		quote_all_identifiers = false;
 
+/* Hook for a plugin to print a function call as the column it stands for */
+deparse_function_as_column_hook_type deparse_function_as_column_hook = NULL;
+
+/*
+ * The column name get_variable() prints for the next whole-row Var it meets,
+ * while get_function_as_column() prints one; it clears it on use.
+ */
+static const char *deparse_column_override = NULL;
+
 
 /* ----------
  * Local functions
@@ -6239,6 +6248,69 @@ get_basic_select_query(Query *query, deparse_context *context)
 		get_rule_windowclause(query, context);
 }
 
+/*
+ * get_function_as_column	- Print a call's whole-row argument as colname
+ *
+ * For a call deparse_function_as_column_hook names a column for.  The
+ * argument is printed as it would be anywhere, but with colname where the
+ * whole row would be: a Var, which in a plan tree may be a reference to a
+ * child's output that resolves to the whole row only there, or the implicit
+ * conversion of a child table's row to its parent's.  Returns false, having
+ * printed nothing, when it resolves to no whole row at all.
+ */
+static bool
+get_function_as_column(Node *arg, const char *colname,
+					   deparse_context *context)
+{
+	StringInfo	save_buf = context->buf;
+	StringInfoData col;
+	bool		printed;
+
+	initStringInfo(&col);
+	context->buf = &col;
+	deparse_column_override = colname;
+	PG_TRY();
+	{
+		get_rule_expr(arg, context, false);
+	}
+	PG_FINALLY();
+	{
+		printed = (deparse_column_override == NULL);
+		deparse_column_override = NULL;
+		context->buf = save_buf;
+	}
+	PG_END_TRY();
+
+	if (printed)
+		appendBinaryStringInfo(context->buf, col.data, col.len);
+	pfree(col.data);
+	return printed;
+}
+
+/*
+ * get_column_function		- Print a call as the column it stands for
+ *
+ * For deparse_function_as_column_hook: returns true, having printed the call
+ * as its column and set *colname to the column's name, or false, having
+ * printed nothing, when the call is not one the hook names a column for.
+ */
+static bool
+get_column_function(Node *node, deparse_context *context,
+					const char **colname)
+{
+	FuncExpr   *expr = (FuncExpr *) node;
+	const char *name;
+
+	if (!IsA(node, FuncExpr) || list_length(expr->args) != 1)
+		return false;
+	name = deparse_function_as_column_hook(expr);
+	if (name == NULL ||
+		!get_function_as_column(linitial(expr->args), name, context))
+		return false;
+	*colname = name;
+	return true;
+}
+
 /* ----------
  * get_target_list			- Parse back a SELECT target list
  *
@@ -6293,6 +6365,12 @@ get_target_list(List *targetList, deparse_context *context)
 		if (tle->expr && (IsA(tle->expr, Var)))
 		{
 			attname = get_variable((Var *) tle->expr, 0, true, context);
+		}
+		else if (unlikely(deparse_function_as_column_hook != NULL) &&
+				 get_column_function((Node *) tle->expr, context,
+									 (const char **) &attname))
+		{
+			/* printed as the column it stands for, which names it too */
 		}
 		else
 		{
@@ -7846,6 +7924,14 @@ get_variable(Var *var, int levelsup, bool istoplevel, deparse_context *context)
 		attname = get_rte_attribute_name(rte, attnum);
 	}
 
+	/* A whole row get_function_as_column() prints is printed as its column */
+	if (unlikely(deparse_column_override != NULL) &&
+		attnum == InvalidAttrNumber)
+	{
+		attname = pstrdup(deparse_column_override);
+		deparse_column_override = NULL;
+	}
+
 	need_prefix = (context->varprefix || attname == NULL ||
 				   var->varreturningtype != VAR_RETURNING_DEFAULT);
 
@@ -7915,6 +8001,12 @@ static void
 get_special_variable(Node *node, deparse_context *context, void *callback_arg)
 {
 	StringInfo	buf = context->buf;
+	const char *colname;
+
+	/* A call printed as the column it stands for needs no parentheses */
+	if (unlikely(deparse_function_as_column_hook != NULL) &&
+		get_column_function(node, context, &colname))
+		return;
 
 	/*
 	 * For a non-Var referent, force parentheses because our caller probably
@@ -10873,6 +10965,15 @@ get_func_expr(FuncExpr *expr, deparse_context *context,
 	if (expr->funcformat == COERCE_SQL_SYNTAX)
 	{
 		if (get_func_sql_syntax(expr, context))
+			return;
+	}
+
+	/* A function an extension stands in for a column with prints as it */
+	if (unlikely(deparse_function_as_column_hook != NULL))
+	{
+		const char *colname;
+
+		if (get_column_function((Node *) expr, context, &colname))
 			return;
 	}
 

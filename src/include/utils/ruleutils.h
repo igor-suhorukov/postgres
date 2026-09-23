@@ -54,4 +54,16 @@ extern char *get_range_partbound_string(List *bound_datums);
 
 extern char *pg_get_statisticsobjdef_string(Oid statextid);
 
+/*
+ * Hook for an extension that stands a function in for a column, through
+ * columnref_fallback_hook, to have a call of it printed back as the column.
+ * Given a call of one argument, it returns the column name to print, or NULL
+ * to print the call as a call.  The name is printed as a column of the
+ * relation whose whole row the argument is, qualified as any column of it
+ * would be; when the argument turns out not to be a whole row, the call is
+ * printed as a call.
+ */
+typedef const char *(*deparse_function_as_column_hook_type) (FuncExpr *expr);
+extern PGDLLIMPORT deparse_function_as_column_hook_type deparse_function_as_column_hook;
+
 #endif							/* RULEUTILS_H */
