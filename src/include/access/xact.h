@@ -459,6 +459,7 @@ extern TimestampTz GetCurrentTransactionStopTimestamp(void);
 extern void SetCurrentStatementStartTimestamp(void);
 extern int	GetCurrentTransactionNestLevel(void);
 extern bool TransactionIdIsCurrentTransactionId(TransactionId xid);
+extern void XactAdoptTransactionState(const char *tstatespace);
 extern int	GetTopReadOnlyTransactionNestLevel(void);
 extern void CommandCounterIncrement(void);
 extern void ForceSyncCommit(void);

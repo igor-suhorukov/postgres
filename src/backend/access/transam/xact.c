@@ -5576,6 +5576,15 @@ EstimateTransactionStateSpace(void)
 	Size		nxids = 0;
 	Size		size = SerializedTransactionStateHeaderSize;
 
+	/*
+	 * XIDs that XactAdoptTransactionState() made current are passed on as
+	 * they are (SerializeTransactionState()), so size them.  A parallel
+	 * worker's, from its leader, is sized as an unpatched server sizes it.
+	 */
+	if (nParallelCurrentXids > 0 && !IsParallelWorker())
+		return add_size(size, mul_size(sizeof(TransactionId),
+									   nParallelCurrentXids));
+
 	for (s = CurrentTransactionState; s != NULL; s = s->parent)
 	{
 		if (FullTransactionIdIsValid(s->fullTransactionId))
@@ -5687,6 +5696,56 @@ StartParallelWorkerTransaction(char *tstatespace)
 	ParallelCurrentXids = &tstate->parallelCurrentXids[0];
 
 	CurrentTransactionState->blockState = TBLOCK_PARALLEL_INPROGRESS;
+}
+
+/*
+ * XactAdoptTransactionState
+ *		Read as a part of the transaction SerializeTransactionState() described.
+ *
+ * A backend that runs part of another backend's transaction, reading what that
+ * backend wrote and has not committed, has to do two things a parallel worker
+ * does: consider the other backend's XIDs current, and read as of its current
+ * command, so that what it wrote in an earlier command is visible -- a catalog
+ * entry included -- and what it writes in this one is not.  This takes both
+ * from the state SerializeTransactionState() wrote in the other backend, the
+ * state a parallel worker starts its transaction from, so that an extension
+ * can hand a transaction over the way PostgreSQL hands it to its workers.
+ *
+ * It has to be called before this transaction takes its first snapshot, and
+ * this backend must not write: its own XIDs would not count as current.  The
+ * XIDs and the command id are forgotten at the end of the transaction.
+ */
+void
+XactAdoptTransactionState(const char *tstatespace)
+{
+	const SerializedTransactionState *tstate =
+		(const SerializedTransactionState *) tstatespace;
+	int			nxids = tstate->nParallelCurrentXids;
+	TransactionId *xids = NULL;
+
+	if (IsParallelWorker() || IsInParallelMode() || !IsTransactionState())
+		elog(ERROR, "cannot adopt a transaction's state here");
+	if (FirstSnapshotSet)
+		elog(ERROR, "cannot adopt a transaction's state after taking a snapshot");
+	if (currentCommandIdUsed)
+		elog(ERROR, "cannot adopt a transaction's state after writing");
+
+	/* Sorted already, as TransactionIdIsCurrentTransactionId() expects */
+	if (nxids > 0)
+	{
+		xids = MemoryContextAlloc(TopTransactionContext,
+								  nxids * sizeof(TransactionId));
+		memcpy(xids, tstate->parallelCurrentXids,
+			   nxids * sizeof(TransactionId));
+	}
+	if (nParallelCurrentXids > 0)
+		pfree(ParallelCurrentXids);
+	ParallelCurrentXids = xids;
+	nParallelCurrentXids = nxids;
+	currentCommandId = tstate->currentCommandId;
+
+	/* A catalog snapshot taken already reads as of the command we left. */
+	InvalidateCatalogSnapshot();
 }
 
 /*
