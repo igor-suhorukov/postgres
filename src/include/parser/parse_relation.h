@@ -47,6 +47,43 @@ extern void markNullableIfNeeded(ParseState *pstate, Var *var);
 extern void markVarForSelectPriv(ParseState *pstate, Var *var);
 extern Relation parserOpenTable(ParseState *pstate, const RangeVar *relation,
 								LOCKMODE lockmode);
+
+/*
+ * Hook for an extension to choose the lock a query takes on a relation it
+ * reads or writes, where PostgreSQL chooses it: as the parser opens a
+ * relation the query names -- its target, or one in FROM -- and as the
+ * rewriter brings in the relations of a view or a rule, among them the table
+ * an automatically updatable view writes.  It is given the relation, the
+ * mode PostgreSQL would take, and the permissions the query requires on the
+ * relation, which tell a plain INSERT from an UPDATE, a DELETE or an
+ * INSERT ... ON CONFLICT DO UPDATE; a relation in FROM requires ACL_SELECT,
+ * and its mode is RowShareLock when a locking clause applies to it.  It
+ * returns the mode to take, which for a relation the query writes is never
+ * weaker than PostgreSQL's, and the relation's range table entry records it,
+ * so that a cached plan takes it again when it is executed.
+ *
+ * A stronger mode is for an extension that serializes writers with one,
+ * taken first rather than after PostgreSQL's weaker mode, which two
+ * transactions that each held it would deadlock upgrading.  A weaker mode,
+ * for a relation the query only reads, is for an extension that decides the
+ * relation's lock only once the query is planned, and takes it then,
+ * recording it in the plan: AccessShareLock conflicts with no mode but
+ * AccessExclusiveLock, so no lock taken after it is an upgrade two such
+ * transactions deadlock on.  The parser looks a relation it opens by name up
+ * without a lock to ask about it, so the relation it opens is the one the
+ * name resolves to once it is locked -- the same one, unless DDL renamed or
+ * replaced one meanwhile.
+ */
+typedef LOCKMODE (*query_lockmode_hook_type) (Oid relid, LOCKMODE lockmode,
+											  AclMode requiredPerms);
+extern PGDLLIMPORT query_lockmode_hook_type query_lockmode_hook;
+
+extern LOCKMODE queryLockMode(Oid relid, LOCKMODE lockmode,
+							  AclMode requiredPerms);
+extern LOCKMODE parserQueryLockMode(ParseState *pstate,
+									const RangeVar *relation,
+									LOCKMODE lockmode, AclMode requiredPerms);
+
 extern ParseNamespaceItem *addRangeTableEntry(ParseState *pstate,
 											  RangeVar *relation,
 											  Alias *alias,

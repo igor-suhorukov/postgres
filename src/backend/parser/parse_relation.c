@@ -38,6 +38,9 @@
 /* Hook for an extension to keep its own columns out of "*" expansion */
 star_expansion_filter_hook_type star_expansion_filter_hook = NULL;
 
+/* Hook for an extension to choose the lock a query takes on a relation */
+query_lockmode_hook_type query_lockmode_hook = NULL;
+
 
 /*
  * Support for fuzzily matching columns.
@@ -1502,6 +1505,47 @@ parserOpenTable(ParseState *pstate, const RangeVar *relation, LOCKMODE lockmode)
 }
 
 /*
+ * The mode query_lockmode_hook chooses for a relation, given the one
+ * PostgreSQL would take -- for a relation the query writes, one PostgreSQL
+ * takes RowExclusiveLock or more on, never a weaker one.  Called only when
+ * the hook is set.
+ */
+LOCKMODE
+queryLockMode(Oid relid, LOCKMODE lockmode, AclMode requiredPerms)
+{
+	LOCKMODE	hookmode;
+
+	Assert(query_lockmode_hook != NULL);
+	hookmode = query_lockmode_hook(relid, lockmode, requiredPerms);
+	if (lockmode >= RowExclusiveLock && hookmode < lockmode)
+		return lockmode;
+	return hookmode;
+}
+
+/*
+ * queryLockMode() for a relation the parser is about to open by name.  The
+ * name is looked up without a lock, and an error in looking it up is
+ * reported at its place in the query, as opening the relation would report
+ * it; a name that finds no relation keeps the parser's mode, for opening the
+ * relation to report.
+ */
+LOCKMODE
+parserQueryLockMode(ParseState *pstate, const RangeVar *relation,
+					LOCKMODE lockmode, AclMode requiredPerms)
+{
+	ParseCallbackState pcbstate;
+	Oid			relid;
+
+	setup_parser_errposition_callback(&pcbstate, pstate, relation->location);
+	relid = RangeVarGetRelid(relation, NoLock, true);
+	cancel_parser_errposition_callback(&pcbstate);
+
+	if (!OidIsValid(relid))
+		return lockmode;
+	return queryLockMode(relid, lockmode, requiredPerms);
+}
+
+/*
  * Add an entry for a relation to the pstate's range table (p_rtable).
  * Then, construct and return a ParseNamespaceItem for the new RTE.
  *
@@ -1537,6 +1581,10 @@ addRangeTableEntry(ParseState *pstate,
 	 * AccessShareLock otherwise.
 	 */
 	lockmode = isLockedRefname(pstate, refname) ? RowShareLock : AccessShareLock;
+
+	/* An extension may choose another mode (query_lockmode_hook) */
+	if (unlikely(query_lockmode_hook != NULL))
+		lockmode = parserQueryLockMode(pstate, relation, lockmode, ACL_SELECT);
 
 	/*
 	 * Get the rel's OID.  This access also ensures that we have an up-to-date

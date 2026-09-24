@@ -179,6 +179,7 @@ setTargetTable(ParseState *pstate, RangeVar *relation,
 			   bool inh, bool alsoSource, AclMode requiredPerms)
 {
 	ParseNamespaceItem *nsitem;
+	LOCKMODE	lockmode = RowExclusiveLock;
 
 	/*
 	 * ENRs hide tables of the same name, so we need to check for them first.
@@ -195,6 +196,11 @@ setTargetTable(ParseState *pstate, RangeVar *relation,
 	if (pstate->p_target_relation != NULL)
 		table_close(pstate->p_target_relation, NoLock);
 
+	/* An extension may choose a stronger mode (query_lockmode_hook) */
+	if (unlikely(query_lockmode_hook != NULL))
+		lockmode = parserQueryLockMode(pstate, relation, lockmode,
+									   requiredPerms);
+
 	/*
 	 * Open target rel and grab suitable lock (which we will hold till end of
 	 * transaction).
@@ -203,7 +209,7 @@ setTargetTable(ParseState *pstate, RangeVar *relation,
 	 * but *not* release the lock.
 	 */
 	pstate->p_target_relation = parserOpenTable(pstate, relation,
-												RowExclusiveLock);
+												lockmode);
 
 	/*
 	 * Now build an RTE and a ParseNamespaceItem.
@@ -211,6 +217,14 @@ setTargetTable(ParseState *pstate, RangeVar *relation,
 	nsitem = addRangeTableEntryForRelation(pstate, pstate->p_target_relation,
 										   RowExclusiveLock,
 										   relation->alias, inh, false);
+
+	/*
+	 * addRangeTableEntryForRelation() takes the parser's own modes only, so a
+	 * stronger one an extension chose is recorded here, for a cached plan to
+	 * take again.
+	 */
+	if (unlikely(query_lockmode_hook != NULL))
+		nsitem->p_rte->rellockmode = lockmode;
 
 	/* remember the RTE/nsitem as being the query target */
 	pstate->p_target_nsitem = nsitem;

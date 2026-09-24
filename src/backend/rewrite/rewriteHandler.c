@@ -194,6 +194,21 @@ AcquireRewriteLocks(Query *parsetree,
 				else
 					lockmode = rte->rellockmode;
 
+				/*
+				 * An extension may choose another mode (query_lockmode_hook),
+				 * which the RTE then records.
+				 */
+				if (unlikely(query_lockmode_hook != NULL) && forExecute)
+				{
+					AclMode		perms = 0;
+
+					if (rte->perminfoindex != 0)
+						perms = getRTEPermissionInfo(parsetree->rteperminfos,
+													 rte)->requiredPerms;
+					lockmode = queryLockMode(rte->relid, lockmode, perms);
+					rte->rellockmode = lockmode;
+				}
+
 				rel = relation_open(rte->relid, lockmode);
 
 				/*
@@ -3309,6 +3324,7 @@ rewriteTargetView(Query *parsetree, Relation view)
 	Relation	base_rel;
 	List	   *view_targetlist;
 	ListCell   *lc;
+	LOCKMODE	lockmode = RowExclusiveLock;
 
 	/*
 	 * Get the Query from the view's ON SELECT rule.  We're going to munge the
@@ -3508,9 +3524,13 @@ rewriteTargetView(Query *parsetree, Relation view)
 	 * We need to acquire lock on it before we try to do anything with it.
 	 * (The subsequent recursive call of RewriteQuery will suppose that we
 	 * already have the right lock!)  Since it will become the query target
-	 * relation, RowExclusiveLock is always the right thing.
+	 * relation, RowExclusiveLock is always the right thing, unless an
+	 * extension chooses a stronger mode (query_lockmode_hook).
 	 */
-	base_rel = relation_open(base_rte->relid, RowExclusiveLock);
+	if (unlikely(query_lockmode_hook != NULL))
+		lockmode = queryLockMode(base_rte->relid, lockmode,
+								 view_perminfo->requiredPerms);
+	base_rel = relation_open(base_rte->relid, lockmode);
 
 	/*
 	 * While we have the relation open, update the RTE's relkind, just in case
@@ -3545,7 +3565,7 @@ rewriteTargetView(Query *parsetree, Relation view)
 	 * base_rte instead of copying it.
 	 */
 	new_rte = base_rte;
-	new_rte->rellockmode = RowExclusiveLock;
+	new_rte->rellockmode = lockmode;
 
 	parsetree->rtable = lappend(parsetree->rtable, new_rte);
 	new_rt_index = list_length(parsetree->rtable);
