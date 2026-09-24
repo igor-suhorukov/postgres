@@ -5878,6 +5878,63 @@ ATParseTransformCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 }
 
 /*
+ * ATAddColumnsByTableAm: the values of the columns an ALTER adds to tab's
+ * table, written by its access method, if it registered relation_add_columns
+ * in the table access method extension registry, in place of a rewrite.
+ * Returns false, having done nothing, if a column that was there already
+ * needs new values, or the method writes none.
+ */
+static bool
+ATAddColumnsByTableAm(AlteredTableInfo *tab)
+{
+	Relation	rel;
+	const TableAmExtRoutine *ext;
+	int			ncolumns = list_length(tab->newvals);
+	AttrNumber *attnums;
+	Expr	  **exprs;
+	bool	   *generated;
+	int			i = 0;
+	ListCell   *l;
+
+	foreach(l, tab->newvals)
+	{
+		NewColumnValue *ex = lfirst(l);
+
+		if (ex->attnum <= tab->oldDesc->natts)
+			return false;
+	}
+
+	rel = table_open(tab->relid, NoLock);
+	ext = GetTableAmExtension(rel->rd_tableam);
+	if (ext == NULL || ext->relation_add_columns == NULL)
+	{
+		table_close(rel, NoLock);
+		return false;
+	}
+
+	attnums = palloc_array(AttrNumber, ncolumns);
+	exprs = palloc_array(Expr *, ncolumns);
+	generated = palloc_array(bool, ncolumns);
+	foreach(l, tab->newvals)
+	{
+		NewColumnValue *ex = lfirst(l);
+
+		attnums[i] = ex->attnum;
+		exprs[i] = ex->expr;
+		generated[i] = ex->is_generated;
+		i++;
+	}
+
+	ext->relation_add_columns(rel, ncolumns, attnums, exprs, generated);
+
+	/* What the method wrote is what the table is verified against, below. */
+	CommandCounterIncrement();
+
+	table_close(rel, NoLock);
+	return true;
+}
+
+/*
  * ATRewriteTables: ALTER TABLE phase 3
  */
 static void
@@ -5916,6 +5973,18 @@ ATRewriteTables(AlterTableStmt *parsetree, List **wqueue, LOCKMODE lockmode,
 			find_composite_type_dependencies(rel->rd_rel->reltype, rel, NULL);
 			table_close(rel, NoLock);
 		}
+
+		/*
+		 * A table whose access method writes the values of the columns an
+		 * ALTER adds without rewriting the rest does so when those values
+		 * are the only reason for a rewrite, and the table is then only
+		 * verified, below, as for an ALTER that adds constraints.
+		 */
+		if (unlikely(TableAmExtensionCount > 0) &&
+			tab->rewrite == AT_REWRITE_DEFAULT_VAL &&
+			tab->relkind == RELKIND_RELATION &&
+			ATAddColumnsByTableAm(tab))
+			tab->rewrite = 0;
 
 		/*
 		 * We only need to rewrite the table if at least one column needs to
