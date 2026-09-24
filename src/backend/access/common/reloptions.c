@@ -24,6 +24,7 @@
 #include "access/nbtree.h"
 #include "access/reloptions.h"
 #include "access/spgist_private.h"
+#include "access/tableamext.h"
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
 #include "commands/tablespace.h"
@@ -1967,6 +1968,47 @@ fillRelOptions(void *rdopts, Size basesize,
 	SET_VARSIZE(rdopts, offset);
 }
 
+
+/*
+ * Parse the options of a table or materialized view of the access method
+ * "tableam": by the method's own parser, if its extension registered one
+ * (access/tableamext.h), and otherwise as heap's.  What a method's parser
+ * returns begins with a StdRdOptions, as heap's does.
+ */
+bytea *
+table_am_reloptions(const TableAmRoutine *tableam, char relkind,
+					Datum reloptions, bool validate)
+{
+	const TableAmExtRoutine *ext;
+
+	ext = tableam ? GetTableAmExtension(tableam) : NULL;
+	if (ext != NULL && ext->reloptions != NULL)
+		return ext->reloptions(reloptions, relkind, validate);
+
+	return heap_reloptions(relkind, reloptions, validate);
+}
+
+/*
+ * extractRelOptions() for a table or materialized view whose access method
+ * may parse its own options: see table_am_reloptions().
+ */
+bytea *
+extractTableAmRelOptions(HeapTuple tuple, TupleDesc tupdesc,
+						 const TableAmRoutine *tableam)
+{
+	bool		isnull;
+	Datum		datum;
+	Form_pg_class classForm = (Form_pg_class) GETSTRUCT(tuple);
+
+	Assert(classForm->relkind == RELKIND_RELATION ||
+		   classForm->relkind == RELKIND_MATVIEW);
+
+	datum = fastgetattr(tuple, Anum_pg_class_reloptions, tupdesc, &isnull);
+	if (isnull)
+		return NULL;
+
+	return table_am_reloptions(tableam, classForm->relkind, datum, false);
+}
 
 /*
  * Option parser for anything that uses StdRdOptions.

@@ -24,6 +24,7 @@
 #include "access/relscan.h"
 #include "access/sysattr.h"
 #include "access/tableam.h"
+#include "access/tableamext.h"
 #include "access/toast_compression.h"
 #include "access/tupconvert.h"
 #include "access/xact.h"
@@ -960,7 +961,15 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 			(void) partitioned_table_reloptions(reloptions, true);
 			break;
 		default:
-			(void) heap_reloptions(relkind, reloptions, true);
+
+			/*
+			 * A table's access method may parse its options itself, if an
+			 * extension registered a parser for it; while one has, a table's
+			 * are checked once its method is chosen, below.
+			 */
+			if (likely(TableAmExtensionCount == 0) ||
+				!RELKIND_HAS_TABLE_AM(relkind))
+				(void) heap_reloptions(relkind, reloptions, true);
 	}
 
 	if (stmt->ofTypename)
@@ -1116,6 +1125,10 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	 * complaining about deadlock risks.
 	 */
 	rel = relation_open(relationId, AccessExclusiveLock);
+
+	/* The options of a table whose method may parse them; see above. */
+	if (unlikely(TableAmExtensionCount > 0) && RELKIND_HAS_TABLE_AM(relkind))
+		(void) table_am_reloptions(rel->rd_tableam, relkind, reloptions, true);
 
 	/*
 	 * Now add any newly specified column default and generation expressions
@@ -17306,7 +17319,12 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 	{
 		case RELKIND_RELATION:
 		case RELKIND_MATVIEW:
-			(void) heap_reloptions(rel->rd_rel->relkind, newOptions, true);
+			if (unlikely(TableAmExtensionCount > 0))
+				(void) table_am_reloptions(rel->rd_tableam,
+										   rel->rd_rel->relkind,
+										   newOptions, true);
+			else
+				(void) heap_reloptions(rel->rd_rel->relkind, newOptions, true);
 			break;
 		case RELKIND_PARTITIONED_TABLE:
 			(void) partitioned_table_reloptions(newOptions, true);

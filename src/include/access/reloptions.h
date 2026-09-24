@@ -24,6 +24,9 @@
 #include "access/tupdesc.h"
 #include "nodes/pg_list.h"
 
+/* forward references in this file */
+typedef struct TableAmRoutine TableAmRoutine;
+
 /* types supported by reloptions */
 typedef enum relopt_type
 {
@@ -248,6 +251,11 @@ extern void *build_local_reloptions(local_relopts *relopts, Datum options,
 extern bytea *default_reloptions(Datum reloptions, bool validate,
 								 relopt_kind kind);
 extern bytea *heap_reloptions(char relkind, Datum reloptions, bool validate);
+extern bytea *table_am_reloptions(const TableAmRoutine *tableam,
+								  char relkind, Datum reloptions,
+								  bool validate);
+extern bytea *extractTableAmRelOptions(HeapTuple tuple, TupleDesc tupdesc,
+									   const TableAmRoutine *tableam);
 extern bytea *view_reloptions(Datum reloptions, bool validate);
 extern bytea *partitioned_table_reloptions(Datum reloptions, bool validate);
 extern bytea *index_reloptions(amoptions_function amoptions, Datum reloptions,

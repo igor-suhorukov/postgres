@@ -37,6 +37,7 @@
 #include "access/sysattr.h"
 #include "access/table.h"
 #include "access/tableam.h"
+#include "access/tableamext.h"
 #include "access/tupdesc_details.h"
 #include "access/xact.h"
 #include "catalog/binary_upgrade.h"
@@ -500,9 +501,16 @@ RelationParseRelOptions(Relation relation, HeapTuple tuple)
 	/*
 	 * Fetch reloptions from tuple; have to use a hardwired descriptor because
 	 * we might not have any other for pg_class yet (consider executing this
-	 * code for pg_class itself)
+	 * code for pg_class itself).  A table's access method may parse its
+	 * options itself, if an extension registered a parser for it.
 	 */
-	options = extractRelOptions(tuple, GetPgClassDescriptor(), amoptsfn);
+	if (unlikely(TableAmExtensionCount > 0) &&
+		(relation->rd_rel->relkind == RELKIND_RELATION ||
+		 relation->rd_rel->relkind == RELKIND_MATVIEW))
+		options = extractTableAmRelOptions(tuple, GetPgClassDescriptor(),
+										   relation->rd_tableam);
+	else
+		options = extractRelOptions(tuple, GetPgClassDescriptor(), amoptsfn);
 
 	/*
 	 * Copy parsed data into CacheMemoryContext.  To guard against the
