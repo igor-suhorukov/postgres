@@ -125,6 +125,9 @@ typedef struct f_smgr
 	int			(*smgr_fd) (SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum, uint32 *off);
 } f_smgr;
 
+/* Hook for an extension to follow relations' files; see smgr.h */
+smgr_file_event_hook_type smgr_file_event_hook = NULL;
+
 static const f_smgr smgrsw[] = {
 	/* magnetic disk */
 	{
@@ -483,6 +486,9 @@ smgrcreate(SMgrRelation reln, ForkNumber forknum, bool isRedo)
 	HOLD_INTERRUPTS();
 	smgrsw[reln->smgr_which].smgr_create(reln, forknum, isRedo);
 	RESUME_INTERRUPTS();
+
+	if (unlikely(smgr_file_event_hook != NULL))
+		smgr_file_event_hook(reln->smgr_rlocator, forknum, SMGR_FILE_CREATE);
 }
 
 /*
@@ -601,6 +607,11 @@ smgrdounlinkall(SMgrRelation *rels, int nrels, bool isRedo)
 			smgrsw[which].smgr_unlink(rlocators[i], forknum, isRedo);
 	}
 
+	if (unlikely(smgr_file_event_hook != NULL))
+		for (i = 0; i < nrels; i++)
+			smgr_file_event_hook(rlocators[i], InvalidForkNumber,
+								 SMGR_FILE_UNLINK);
+
 	pfree(rlocators);
 
 	RESUME_INTERRUPTS();
@@ -636,6 +647,9 @@ smgrextend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 		reln->smgr_cached_nblocks[forknum] = InvalidBlockNumber;
 
 	RESUME_INTERRUPTS();
+
+	if (unlikely(smgr_file_event_hook != NULL))
+		smgr_file_event_hook(reln->smgr_rlocator, forknum, SMGR_FILE_EXTEND);
 }
 
 /*
@@ -665,6 +679,9 @@ smgrzeroextend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 		reln->smgr_cached_nblocks[forknum] = InvalidBlockNumber;
 
 	RESUME_INTERRUPTS();
+
+	if (unlikely(smgr_file_event_hook != NULL))
+		smgr_file_event_hook(reln->smgr_rlocator, forknum, SMGR_FILE_EXTEND);
 }
 
 /*
@@ -921,6 +938,10 @@ smgrtruncate(SMgrRelation reln, ForkNumber *forknum, int nforks,
 		 */
 		reln->smgr_cached_nblocks[forknum[i]] =
 			nblocks[i] > old_nblocks[i] ? old_nblocks[i] : nblocks[i];
+
+		if (unlikely(smgr_file_event_hook != NULL))
+			smgr_file_event_hook(reln->smgr_rlocator, forknum[i],
+								 SMGR_FILE_TRUNCATE);
 	}
 }
 

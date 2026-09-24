@@ -71,6 +71,35 @@ typedef struct SMgrRelationData
 
 typedef SMgrRelationData *SMgrRelation;
 
+/*
+ * What smgr_file_event_hook is told happened to a relation's files, after
+ * the storage manager has done it.
+ */
+typedef enum SmgrFileEvent
+{
+	SMGR_FILE_CREATE,			/* smgrcreate() */
+	SMGR_FILE_EXTEND,			/* smgrextend() and smgrzeroextend() */
+	SMGR_FILE_TRUNCATE,			/* smgrtruncate() */
+	SMGR_FILE_UNLINK,			/* smgrdounlinkall(), all of its forks */
+} SmgrFileEvent;
+
+/*
+ * Hook for an extension that follows the files of relations as they change,
+ * such as one that keeps each relation's size against a quota.  It is called
+ * after the storage manager's own call, with the fork concerned, or
+ * InvalidForkNumber for all of them, and in recovery too.  What it may do
+ * depends on the event.  At a creation or an extension it may raise, as the
+ * storage manager itself may there, but not in recovery, where an error
+ * stops recovery.  At a truncation it is inside a critical section, where
+ * an error is a PANIC and an allocation fails an assertion, so it may do
+ * neither.  At an unlink the transaction's end is decided already, and a
+ * failure has to be a WARNING.
+ */
+typedef void (*smgr_file_event_hook_type) (RelFileLocatorBackend rlocator,
+										   ForkNumber forknum,
+										   SmgrFileEvent event);
+extern PGDLLIMPORT smgr_file_event_hook_type smgr_file_event_hook;
+
 #define SmgrIsTemp(smgr) \
 	RelFileLocatorBackendIsTemp((smgr)->smgr_rlocator)
 
