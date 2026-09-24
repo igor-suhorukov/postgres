@@ -119,4 +119,13 @@ extern void RegisterTableAmExtension(const TableAmRoutine *am,
 /* What was registered for am, or NULL. */
 extern const TableAmExtRoutine *GetTableAmExtension(const TableAmRoutine *am);
 
+/*
+ * Give the method of a sequential or bitmap scan just begun the plan node
+ * it serves, if its extension asked to know (scan_extractcolumns).
+ */
+extern void table_scan_extractcolumns(TableScanDesc scan, PlanState *ps);
+
+/* Does the method of the table relid read by column (scan_by_column)? */
+extern bool table_scans_by_column(Oid relid);
+
 #endif							/* TABLEAMEXT_H */

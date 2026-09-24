@@ -37,6 +37,7 @@
 
 #include "access/relscan.h"
 #include "access/tableam.h"
+#include "access/tableamext.h"
 #include "access/visibilitymap.h"
 #include "executor/executor.h"
 #include "executor/instrument.h"
@@ -158,6 +159,11 @@ BitmapTableScanSetup(BitmapHeapScanState *node)
 							   0,
 							   NULL,
 							   flags);
+
+		/* A table's method may read only the columns this scan needs. */
+		if (unlikely(TableAmExtensionCount > 0))
+			table_scan_extractcolumns(node->ss.ss_currentScanDesc,
+									  &node->ss.ps);
 	}
 
 	node->ss.ss_currentScanDesc->st.rs_tbmiterator = tbmiterator;

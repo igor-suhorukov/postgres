@@ -29,6 +29,7 @@
 
 #include "access/relscan.h"
 #include "access/tableam.h"
+#include "access/tableamext.h"
 #include "executor/execParallel.h"
 #include "executor/execScan.h"
 #include "executor/executor.h"
@@ -82,6 +83,10 @@ SeqNext(SeqScanState *node)
 								   estate->es_snapshot,
 								   0, NULL, flags);
 		node->ss.ss_currentScanDesc = scandesc;
+
+		/* A table's method may read only the columns this scan needs. */
+		if (unlikely(TableAmExtensionCount > 0))
+			table_scan_extractcolumns(scandesc, &node->ss.ps);
 	}
 
 	/*
@@ -409,6 +414,8 @@ ExecSeqScanInitializeDSM(SeqScanState *node,
 
 	node->ss.ss_currentScanDesc =
 		table_beginscan_parallel(node->ss.ss_currentRelation, pscan, flags);
+	if (unlikely(TableAmExtensionCount > 0))
+		table_scan_extractcolumns(node->ss.ss_currentScanDesc, &node->ss.ps);
 }
 
 /* ----------------------------------------------------------------
@@ -449,6 +456,8 @@ ExecSeqScanInitializeWorker(SeqScanState *node,
 	pscan = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
 	node->ss.ss_currentScanDesc =
 		table_beginscan_parallel(node->ss.ss_currentRelation, pscan, flags);
+	if (unlikely(TableAmExtensionCount > 0))
+		table_scan_extractcolumns(node->ss.ss_currentScanDesc, &node->ss.ps);
 }
 
 /*

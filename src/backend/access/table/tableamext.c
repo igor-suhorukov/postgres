@@ -19,6 +19,7 @@
  */
 #include "postgres.h"
 
+#include "access/table.h"
 #include "access/tableamext.h"
 #include "miscadmin.h"
 #include "utils/memutils.h"
@@ -90,4 +91,29 @@ GetTableAmExtension(const TableAmRoutine *am)
 			return TableAmExtensionRoutines[i];
 	}
 	return NULL;
+}
+
+void
+table_scan_extractcolumns(TableScanDesc scan, PlanState *ps)
+{
+	const TableAmExtRoutine *ext = GetTableAmExtension(scan->rs_rd->rd_tableam);
+
+	if (ext != NULL && ext->scan_extractcolumns != NULL)
+		ext->scan_extractcolumns(scan, ps);
+}
+
+bool
+table_scans_by_column(Oid relid)
+{
+	Relation	rel;
+	const TableAmExtRoutine *ext;
+	bool		result;
+
+	/* The planner holds a lock on every relation it plans a scan of. */
+	rel = table_open(relid, NoLock);
+	ext = rel->rd_tableam ? GetTableAmExtension(rel->rd_tableam) : NULL;
+	result = (ext != NULL && ext->scan_by_column);
+	table_close(rel, NoLock);
+
+	return result;
 }

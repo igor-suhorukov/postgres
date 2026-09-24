@@ -17,6 +17,7 @@
 #include "postgres.h"
 
 #include "access/sysattr.h"
+#include "access/tableamext.h"
 #include "access/transam.h"
 #include "catalog/pg_class.h"
 #include "foreign/fdwapi.h"
@@ -893,6 +894,14 @@ use_physical_tlist(PlannerInfo *root, Path *path, int flags)
 	 * pathtarget that way.)
 	 */
 	if (IsA(path, CustomPath))
+		return false;
+
+	/*
+	 * Nor to a scan of a table whose access method reads by column, which
+	 * reads only the columns its scan's target list names.
+	 */
+	if (unlikely(TableAmExtensionCount > 0) && rel->rtekind == RTE_RELATION &&
+		table_scans_by_column(planner_rt_fetch(rel->relid, root)->relid))
 		return false;
 
 	/*
