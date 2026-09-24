@@ -16,6 +16,7 @@ OBJS = \
 	table.o \
 	tableam.o \
 	tableamapi.o \
+	tableamext.o \
 	toast_helper.o
 
 include $(top_srcdir)/src/backend/common.mk
