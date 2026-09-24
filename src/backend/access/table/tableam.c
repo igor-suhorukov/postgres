@@ -23,6 +23,7 @@
 
 #include "access/syncscan.h"
 #include "access/tableam.h"
+#include "access/tableamext.h"
 #include "access/xact.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/plancat.h"
@@ -248,6 +249,18 @@ table_index_fetch_tuple_check(Relation rel,
 	TupleTableSlot *slot;
 	bool		call_again = false;
 	bool		found;
+
+	/*
+	 * A table's access method may answer the probe itself, without the slot
+	 * and the fetch made for each one here, if an extension registered it.
+	 */
+	if (unlikely(TableAmExtensionCount > 0))
+	{
+		const TableAmExtRoutine *ext = GetTableAmExtension(rel->rd_tableam);
+
+		if (ext != NULL && ext->index_unique_check != NULL)
+			return ext->index_unique_check(rel, tid, snapshot, all_dead);
+	}
 
 	slot = table_slot_create(rel, NULL);
 	scan = table_index_fetch_begin(rel, SO_NONE);
