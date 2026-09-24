@@ -66,4 +66,19 @@ extern char *pg_get_statisticsobjdef_string(Oid statextid);
 typedef const char *(*deparse_function_as_column_hook_type) (FuncExpr *expr);
 extern PGDLLIMPORT deparse_function_as_column_hook_type deparse_function_as_column_hook;
 
+/*
+ * Hook for an extension that makes a call of a function in FROM of syntax of
+ * its own, to have it printed back as that syntax.  Given the RTE of a call
+ * of one function, without WITH ORDINALITY, and the name the query refers to
+ * it by, it returns the text to print in place of the call and its column
+ * definition list, or NULL to print them.  When it returns text,
+ * *print_alias says whether the alias is printed after it; and the item's
+ * columns are printed as a relation's are, with aliases only where the names
+ * the query uses differ from their own, which need the alias too.
+ */
+typedef const char *(*deparse_range_function_hook_type) (RangeTblEntry *rte,
+														  const char *refname,
+														  bool *print_alias);
+extern PGDLLIMPORT deparse_range_function_hook_type deparse_range_function_hook;
+
 #endif							/* RULEUTILS_H */

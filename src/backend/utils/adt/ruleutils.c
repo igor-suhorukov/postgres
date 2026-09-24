@@ -341,6 +341,9 @@ bool		quote_all_identifiers = false;
 /* Hook for a plugin to print a function call as the column it stands for */
 deparse_function_as_column_hook_type deparse_function_as_column_hook = NULL;
 
+/* Hook for a plugin to print a function in FROM as the syntax it made it of */
+deparse_range_function_hook_type deparse_range_function_hook = NULL;
+
 /*
  * The column name get_variable() prints for the next whole-row Var it meets,
  * while get_function_as_column() prints one; it clears it on use.
@@ -12561,6 +12564,32 @@ get_from_clause(Query *query, const char *prefix, deparse_context *context)
 	}
 }
 
+/*
+ * range_function_renamed - does a function in FROM that
+ * deparse_range_function_hook printed need a column alias list?
+ *
+ * As set_relation_column_names() decides it for a relation: where a name to
+ * print differs from the column's own.
+ */
+static bool
+range_function_renamed(RangeTblEntry *rte, deparse_columns *colinfo)
+{
+	List	   *colnames;
+	int			i = 0;
+
+	expandRTE(rte, 1, 0, VAR_RETURNING_DEFAULT, -1,
+			  true /* include dropped */ , &colnames, NULL);
+	foreach_node(String, real, colnames)
+	{
+		if (i < colinfo->num_cols && colinfo->colnames[i] != NULL &&
+			strVal(real)[0] != '\0' &&
+			strcmp(colinfo->colnames[i], strVal(real)) != 0)
+			return true;
+		i++;
+	}
+	return false;
+}
+
 static void
 get_from_clause_item(Node *jtnode, Query *query, deparse_context *context)
 {
@@ -12573,6 +12602,8 @@ get_from_clause_item(Node *jtnode, Query *query, deparse_context *context)
 		RangeTblEntry *rte = rt_fetch(varno, query->rtable);
 		deparse_columns *colinfo = deparse_columns_fetch(varno, dpns);
 		RangeTblFunction *rtfunc1 = NULL;
+		const char *hooktext = NULL;
+		bool		hookalias = true;
 
 		if (rte->lateral)
 			appendStringInfoString(buf, "LATERAL ");
@@ -12599,6 +12630,26 @@ get_from_clause_item(Node *jtnode, Query *query, deparse_context *context)
 			case RTE_FUNCTION:
 				/* Function RTE */
 				rtfunc1 = (RangeTblFunction *) linitial(rte->functions);
+
+				/*
+				 * A call an extension made of syntax of its own, printed as
+				 * that syntax, with no column definition list.  Its columns
+				 * are the ones that syntax gives, as a relation's are: their
+				 * aliases are printed only where the names to print differ.
+				 */
+				if (deparse_range_function_hook != NULL &&
+					list_length(rte->functions) == 1 && !rte->funcordinality)
+					hooktext = deparse_range_function_hook(rte,
+														   get_rtable_name(varno,
+																		   context),
+														   &hookalias);
+				if (hooktext != NULL)
+				{
+					appendStringInfoString(buf, hooktext);
+					colinfo->printaliases = range_function_renamed(rte, colinfo);
+					rtfunc1 = NULL;
+					break;
+				}
 
 				/*
 				 * Omit ROWS FROM() syntax for just one function, unless it
@@ -12709,7 +12760,8 @@ get_from_clause_item(Node *jtnode, Query *query, deparse_context *context)
 		}
 
 		/* Print the relation alias, if needed */
-		get_rte_alias(rte, varno, false, context);
+		if (hooktext == NULL || hookalias || colinfo->printaliases)
+			get_rte_alias(rte, varno, false, context);
 
 		/* Print the column definitions or aliases, if needed */
 		if (rtfunc1 && rtfunc1->funccolnames != NIL)
