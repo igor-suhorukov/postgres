@@ -65,6 +65,7 @@
 #include "utils/builtins.h"
 #include "utils/combocid.h"
 #include "utils/guc.h"
+#include "utils/injection_point.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/relmapper.h"
@@ -1445,6 +1446,9 @@ RecordTransactionCommit(void)
 		replorigin = (replorigin_xact_state.origin != InvalidReplOriginId &&
 					  replorigin_xact_state.origin != DoNotReplicateId);
 
+		/* Load the injection point before entering the critical section */
+		INJECTION_POINT_LOAD("transaction-commit-after-delay-checkpoint");
+
 		/*
 		 * Mark ourselves as within our "commit critical section".  This
 		 * forces any concurrent checkpoint to wait until we've updated
@@ -1469,6 +1473,8 @@ RecordTransactionCommit(void)
 		Assert((MyProc->delayChkptFlags & DELAY_CHKPT_IN_COMMIT) == 0);
 		START_CRIT_SECTION();
 		MyProc->delayChkptFlags |= DELAY_CHKPT_IN_COMMIT;
+
+		INJECTION_POINT_CACHED("transaction-commit-after-delay-checkpoint", NULL);
 
 		Assert(xactStopTimestamp == 0);
 
