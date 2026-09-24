@@ -24,6 +24,7 @@
 #include "access/relscan.h"
 #include "access/table.h"
 #include "access/tableam.h"
+#include "access/tableamext.h"
 #include "access/xloginsert.h"
 #include "catalog/index.h"
 #include "catalog/pg_am.h"
@@ -245,6 +246,106 @@ static void _brin_parallel_scan_and_build(BrinBuildState *state,
 										  Sharedsort *sharedsort,
 										  Relation heap, Relation index,
 										  int sortmem, bool progress);
+
+/*
+ * A table whose access method's row IDs leave gaps -- block numbers whose
+ * high bits are a file number -- gives BRIN the runs of block numbers it
+ * has rows in (access/tableamext.h), and BRIN walks those runs' ranges and
+ * not the gaps between them: a range between two runs gets no summary, and
+ * a scan does not visit it.  The runs of the table whose index is being
+ * built or summarized are kept here for the callbacks that walk its ranges,
+ * set where each build or summarization begins; brin_heap_sequenced is
+ * false for any other table, and always where no method has registered.
+ */
+static bool brin_heap_sequenced = false;
+static TableAmBlockSequence *brin_heap_seqs = NULL;
+static int	brin_heap_nseqs = 0;
+
+/*
+ * brin_table_sequences
+ *		The runs of block numbers of heapRel, if its access method gives them,
+ *		in *seqs and *nseqs; false, and nothing set, otherwise.
+ */
+static bool
+brin_table_sequences(Relation heapRel, TableAmBlockSequence **seqs,
+					 int *nseqs)
+{
+	const TableAmExtRoutine *ext = GetTableAmExtension(heapRel->rd_tableam);
+
+	if (ext == NULL || ext->relation_get_block_sequences == NULL)
+		return false;
+
+	*nseqs = 0;
+	*seqs = ext->relation_get_block_sequences(heapRel, nseqs);
+	return true;
+}
+
+/*
+ * brin_seq_range
+ *		The first range, at or after the one starting at blkno, that holds a
+ *		block of one of the runs seqs[0..nseqs), which are in order and do not
+ *		overlap; or the end of the last run, when there is none.
+ */
+static uint64
+brin_seq_range(const TableAmBlockSequence *seqs, int nseqs, uint64 blkno,
+			   BlockNumber pagesPerRange)
+{
+	uint64		end = 0;
+
+	for (int i = 0; i < nseqs; i++)
+	{
+		uint64		start = seqs[i].startblknum;
+
+		end = start + seqs[i].nblocks;
+		if (seqs[i].nblocks == 0 || blkno >= end)
+			continue;
+		if (blkno + pagesPerRange > start)
+			return blkno;
+		return (start / pagesPerRange) * pagesPerRange;
+	}
+	return Max(end, blkno);
+}
+
+/*
+ * brin_seq_end
+ *		The block after the last of the runs seqs[0..nseqs): the number of
+ *		blocks a walk of them covers, as RelationGetNumberOfBlocks() is for
+ *		a table whose block numbers have no gaps.
+ */
+static BlockNumber
+brin_seq_end(const TableAmBlockSequence *seqs, int nseqs)
+{
+	uint64		end = 0;
+
+	for (int i = 0; i < nseqs; i++)
+		end = Max(end, (uint64) seqs[i].startblknum + seqs[i].nblocks);
+	return (BlockNumber) Min(end, (uint64) MaxBlockNumber + 1);
+}
+
+/*
+ * brin_build_sequences
+ *		Take heapRel's runs, if it has them, for a build about to begin:
+ *		the build then starts at the first range of the first run, and ends
+ *		after the last run, whatever the relation's size.
+ */
+static void
+brin_build_sequences(BrinBuildState *state, Relation heapRel)
+{
+	BlockNumber end;
+
+	brin_heap_sequenced = brin_table_sequences(heapRel, &brin_heap_seqs,
+											   &brin_heap_nseqs);
+	if (!brin_heap_sequenced)
+		return;
+
+	end = brin_seq_end(brin_heap_seqs, brin_heap_nseqs);
+	state->bs_currRangeStart =
+		(BlockNumber) Min(brin_seq_range(brin_heap_seqs, brin_heap_nseqs, 0,
+										 state->bs_pagesPerRange),
+						  (uint64) MaxBlockNumber);
+	state->bs_maxRangeStart = state->bs_pagesPerRange +
+		(end > 0 ? ((end - 1) / state->bs_pagesPerRange) * state->bs_pagesPerRange : 0);
+}
 
 /*
  * BRIN handler function: return IndexAmRoutine with access method parameters
@@ -592,6 +693,9 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	char	   *ptr;
 	Size		len;
 	char	   *tmp PG_USED_FOR_ASSERTS_ONLY;
+	bool		sequenced = false;
+	TableAmBlockSequence *seqs = NULL;
+	int			nseqs = 0;
 
 	opaque = (BrinOpaque *) scan->opaque;
 	bdesc = opaque->bo_bdesc;
@@ -606,6 +710,9 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	heapOid = IndexGetRelation(RelationGetRelid(idxRel), false);
 	heapRel = table_open(heapOid, AccessShareLock);
 	nblocks = RelationGetNumberOfBlocks(heapRel);
+	if (unlikely(TableAmExtensionCount > 0) &&
+		(sequenced = brin_table_sequences(heapRel, &seqs, &nseqs)))
+		nblocks = brin_seq_end(seqs, nseqs);
 	table_close(heapRel, AccessShareLock);
 
 	/*
@@ -751,6 +858,12 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 		Size		size;
 
 		CHECK_FOR_INTERRUPTS();
+
+		/* A table's ranges between its runs of block numbers are passed by. */
+		if (unlikely(TableAmExtensionCount > 0) && sequenced &&
+			(heapBlk = brin_seq_range(seqs, nseqs, heapBlk,
+									  opaque->bo_pagesPerRange)) >= nblocks)
+			break;
 
 		MemoryContextReset(perRangeCxt);
 
@@ -1029,6 +1142,14 @@ brinbuildCallback(Relation index,
 		/* set state to correspond to the next range */
 		state->bs_currRangeStart += state->bs_pagesPerRange;
 
+		/* ... of the table's runs of block numbers, if it has them */
+		if (unlikely(brin_heap_sequenced))
+			state->bs_currRangeStart = (BlockNumber)
+				Min(brin_seq_range(brin_heap_seqs, brin_heap_nseqs,
+								   state->bs_currRangeStart,
+								   state->bs_pagesPerRange),
+					(uint64) MaxBlockNumber);
+
 		/* re-initialize state for it */
 		brin_memtuple_initialize(state->bs_dtuple, state->bs_bdesc);
 	}
@@ -1164,6 +1285,13 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	revmap = brinRevmapInitialize(index, &pagesPerRange);
 	state = initialize_brin_buildstate(index, revmap, pagesPerRange,
 									   RelationGetNumberOfBlocks(heap));
+
+	/*
+	 * A table whose access method's row IDs leave gaps between runs of block
+	 * numbers gets summaries for the ranges of its runs alone.
+	 */
+	if (unlikely(TableAmExtensionCount > 0))
+		brin_build_sequences(state, heap);
 
 	/*
 	 * Attempt to launch parallel worker scan when required
@@ -1783,7 +1911,8 @@ summarize_range(IndexInfo *indexInfo, BrinBuildState *state, Relation heapRel,
 	 * cannot shrink concurrently (but it can grow).
 	 */
 	Assert(heapBlk % state->bs_pagesPerRange == 0);
-	if (heapBlk + state->bs_pagesPerRange > heapNumBlks)
+	if (heapBlk + state->bs_pagesPerRange > heapNumBlks &&
+		likely(!brin_heap_sequenced))
 	{
 		/*
 		 * If we're asked to scan what we believe to be the final range on the
@@ -1901,6 +2030,10 @@ brinsummarize(Relation index, Relation heapRel, BlockNumber pageRange,
 
 	/* determine range of pages to process */
 	heapNumBlocks = RelationGetNumberOfBlocks(heapRel);
+	if (unlikely(TableAmExtensionCount > 0) &&
+		(brin_heap_sequenced = brin_table_sequences(heapRel, &brin_heap_seqs,
+													&brin_heap_nseqs)))
+		heapNumBlocks = brin_seq_end(brin_heap_seqs, brin_heap_nseqs);
 	if (pageRange == BRIN_ALL_BLOCKRANGES)
 		startBlk = 0;
 	else
@@ -1923,6 +2056,14 @@ brinsummarize(Relation index, Relation heapRel, BlockNumber pageRange,
 	{
 		BrinTuple  *tup;
 		OffsetNumber off;
+
+		/* A table's ranges between its runs of block numbers are passed by. */
+		if (unlikely(brin_heap_sequenced) &&
+			(startBlk = (BlockNumber)
+			 Min(brin_seq_range(brin_heap_seqs, brin_heap_nseqs, startBlk,
+								pagesPerRange),
+				 (uint64) MaxBlockNumber)) >= heapNumBlocks)
+			break;
 
 		/*
 		 * Unless requested to summarize even a partial range, go away now if
@@ -3021,6 +3162,14 @@ brin_fill_empty_ranges(BrinBuildState *state,
 	/* Generate empty ranges until we hit the next non-empty range. */
 	while (blkno < nextRange)
 	{
+		/* A table's ranges between its runs of block numbers get none. */
+		if (unlikely(brin_heap_sequenced) &&
+			(blkno = (BlockNumber)
+			 Min(brin_seq_range(brin_heap_seqs, brin_heap_nseqs, blkno,
+								state->bs_pagesPerRange),
+				 (uint64) MaxBlockNumber)) >= nextRange)
+			break;
+
 		/* Did we already build the empty tuple? If not, do it now. */
 		brin_build_empty_tuple(state, blkno);
 
