@@ -40,6 +40,17 @@ static int64 blocks_written = 0;
 static int64 badblocks = 0;
 static ControlFileData *ControlFile;
 
+/*
+ * The suffixes an extension marked as its own, listed one a line in
+ * EXTENSION_MARKS_FILE in the data directory's root: an entry of a database
+ * directory named by a number and one of them is a directory of files the
+ * extension keeps there, which are no relation's pages.  Vanilla PostgreSQL
+ * never writes the file.
+ */
+#define EXTENSION_MARKS_FILE	"extension_marks"
+static char **extension_marks = NULL;
+static int	n_extension_marks = 0;
+
 static char *only_filenode = NULL;
 static bool do_sync = true;
 static bool verbose = false;
@@ -290,6 +301,77 @@ scan_file(const char *fn, int segmentno)
 }
 
 /*
+ * Read the extension marks of the data directory, their number into *nmarks.  A
+ * line that is no valid mark -- an underscore, then at most 31 lower-case
+ * letters, digits and underscores, and not a fork's name -- marks nothing, so
+ * a damaged file can hide no relation's files.
+ */
+static char **
+load_extension_marks(const char *datadir, int *nmarks)
+{
+	char		path[MAXPGPATH];
+	char		line[64];
+	char	  **marks = NULL;
+	FILE	   *f;
+
+	*nmarks = 0;
+	snprintf(path, sizeof(path), "%s/%s", datadir, EXTENSION_MARKS_FILE);
+	if ((f = fopen(path, "r")) == NULL)
+	{
+		if (errno != ENOENT)
+			pg_fatal("could not open file \"%s\" for reading: %m", path);
+		return NULL;
+	}
+	while (fgets(line, sizeof(line), f) != NULL)
+	{
+		size_t		len = strcspn(line, "\n");
+		bool		valid = len >= 2 && len <= 32 && line[0] == '_';
+		int			c;
+
+		/* a line longer than any mark is none: pass over the rest of it */
+		if (line[len] != '\n' && !feof(f))
+		{
+			while ((c = fgetc(f)) != EOF && c != '\n')
+				;
+			continue;
+		}
+		line[len] = '\0';
+		for (size_t i = 1; valid && i < len; i++)
+			valid = (line[i] >= 'a' && line[i] <= 'z') ||
+				(line[i] >= '0' && line[i] <= '9') || line[i] == '_';
+		for (int fork = 0; valid && fork <= MAX_FORKNUM; fork++)
+			valid = strcmp(line + 1, forkNames[fork]) != 0;
+		if (valid)
+		{
+			marks = pg_realloc(marks, (*nmarks + 1) * sizeof(char *));
+			marks[(*nmarks)++] = pg_strdup(line);
+		}
+	}
+	if (ferror(f))
+		pg_fatal("could not read file \"%s\": %m", path);
+	fclose(f);
+	return marks;
+}
+
+/* Is this entry of a database directory a number and a marked suffix? */
+static bool
+is_extension_marked(const char *name)
+{
+	const char *suffix = name;
+
+	while (*suffix >= '0' && *suffix <= '9')
+		suffix++;
+	if (suffix == name)
+		return false;
+	for (int i = 0; i < n_extension_marks; i++)
+	{
+		if (strcmp(suffix, extension_marks[i]) == 0)
+			return true;
+	}
+	return false;
+}
+
+/*
  * Scan the given directory for items which can be checksummed and
  * operate on each one of them.  If "sizeonly" is true, the size of
  * all the items which have checksums is computed and returned back
@@ -331,6 +413,10 @@ scan_directory(const char *basedir, const char *subdir, bool sizeonly)
 
 		/* Skip macOS system files */
 		if (strcmp(de->d_name, ".DS_Store") == 0)
+			continue;
+
+		/* Skip what an extension keeps there that is no relation's pages */
+		if (n_extension_marks > 0 && is_extension_marked(de->d_name))
 			continue;
 
 		snprintf(fn, sizeof(fn), "%s/%s", path, de->d_name);
@@ -600,6 +686,8 @@ main(int argc, char *argv[])
 	/* Operate on all files if checking or enabling checksums */
 	if (mode == PG_MODE_CHECK || mode == PG_MODE_ENABLE)
 	{
+		extension_marks = load_extension_marks(DataDir, &n_extension_marks);
+
 		/*
 		 * If progress status information is requested, we need to scan the
 		 * directory tree twice: once to know how much total data needs to be
