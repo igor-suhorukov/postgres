@@ -160,6 +160,32 @@ extern void MemoryContextCreate(MemoryContext node,
 extern void *MemoryContextAllocationFailure(MemoryContext context, Size size,
 											int flags);
 
+/*
+ * A block's malloc(), realloc() and free() for the context types: where
+ * memory_block_alloc_hook is set, it is asked or told first (see memutils.h),
+ * and the first two answer NULL where it refuses, or where malloc() or
+ * realloc() fails; where it is not, each is the libc call it stands for, but
+ * for the test of the hook.  The hooked cases are out of line, each the one
+ * call of its branch, so that a caller's code is as it was.
+ */
+#define MemoryContextBlockMalloc(context, size) \
+	(unlikely(memory_block_alloc_hook != NULL) ? \
+	 MemoryContextBlockMallocHooked((context), (size)) : malloc(size))
+#define MemoryContextBlockRealloc(context, block, oldsize, newsize) \
+	(unlikely(memory_block_alloc_hook != NULL) ? \
+	 MemoryContextBlockReallocHooked((context), (block), (oldsize), \
+									 (newsize)) : realloc((block), (newsize)))
+#define MemoryContextBlockFree(context, block, size) \
+	(unlikely(memory_block_alloc_hook != NULL) ? \
+	 MemoryContextBlockFreeHooked((context), (block), (size)) : free(block))
+
+extern void *MemoryContextBlockMallocHooked(MemoryContext context, Size size);
+extern void *MemoryContextBlockReallocHooked(MemoryContext context,
+											 void *block, Size oldsize,
+											 Size newsize);
+extern void MemoryContextBlockFreeHooked(MemoryContext context, void *block,
+										 Size size);
+
 pg_noreturn extern void MemoryContextSizeFailure(MemoryContext context, Size size,
 												 int flags);
 

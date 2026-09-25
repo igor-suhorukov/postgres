@@ -66,6 +66,28 @@ extern PGDLLIMPORT MemoryContext CurTransactionContext;
 /* This is a transient link to the active portal's memory context: */
 extern PGDLLIMPORT MemoryContext PortalContext;
 
+/*
+ * Hook for extensions that account for the memory a process holds: told of
+ * every block a memory context takes from malloc() or gives back to free()
+ * -- the blocks of AllocSet, Generation, Slab and Bump contexts, the
+ * allocation that holds a context's own header among them, never a chunk
+ * within a block -- with the block's size before and after: (0, size)
+ * before a new block is taken, (size, 0) before one is freed, and both
+ * before a realloc().  "context" is the context the block is for, or NULL
+ * for the allocation that makes a context.  Returning false refuses a new or
+ * larger block, which then fails as malloc() returning NULL does; where it
+ * would refuse one, the hook may raise an error of its own instead, outside
+ * a critical section, since nothing has been changed yet.  A block given back
+ * cannot be refused, and the hook may not raise then.  A malloc() or
+ * realloc() that fails after the hook allowed it is reported to it as the
+ * opposite change.  The hook runs inside the allocator, in whatever state
+ * the process is in -- a critical section, an error's cleanup -- and memory
+ * it allocates comes back to it.
+ */
+typedef bool (*memory_block_alloc_hook_type) (MemoryContext context,
+											  Size oldsize, Size newsize);
+extern PGDLLIMPORT memory_block_alloc_hook_type memory_block_alloc_hook;
+
 
 /*
  * Memory-context-type-independent functions in mcxt.c

@@ -176,7 +176,7 @@ BumpContextCreate(MemoryContext parent, const char *name, Size minContextSize,
 	 * Allocate the initial block.  Unlike other bump.c blocks, it starts with
 	 * the context header and its block header follows that.
 	 */
-	set = (BumpContext *) malloc(allocSize);
+	set = (BumpContext *) MemoryContextBlockMalloc(NULL, allocSize);
 	if (set == NULL)
 	{
 		MemoryContextStats(TopMemoryContext);
@@ -300,7 +300,8 @@ BumpDelete(MemoryContext context)
 	VALGRIND_DESTROY_MEMPOOL(context);
 
 	/* And free the context header and keeper block */
-	free(context);
+	MemoryContextBlockFree(context, context,
+						   (char *) KeeperBlock(context)->endptr - (char *) context);
 }
 
 /*
@@ -334,7 +335,7 @@ BumpAllocLarge(MemoryContext context, Size size, int flags)
 	required_size = chunk_size + Bump_CHUNKHDRSZ;
 	blksize = required_size + Bump_BLOCKHDRSZ;
 
-	block = (BumpBlock *) malloc(blksize);
+	block = (BumpBlock *) MemoryContextBlockMalloc(context, blksize);
 	if (block == NULL)
 		return MemoryContextAllocationFailure(context, size, flags);
 
@@ -473,7 +474,7 @@ BumpAllocFromNewBlock(MemoryContext context, Size size, int flags,
 	if (blksize < required_size)
 		blksize = pg_nextpower2_size_t(required_size);
 
-	block = (BumpBlock *) malloc(blksize);
+	block = (BumpBlock *) MemoryContextBlockMalloc(context, blksize);
 
 	if (block == NULL)
 		return MemoryContextAllocationFailure(context, size, flags);
@@ -620,6 +621,8 @@ BumpBlockFreeBytes(BumpBlock *block)
 static inline void
 BumpBlockFree(BumpContext *set, BumpBlock *block)
 {
+	Size		blksize = (char *) block->endptr - (char *) block;
+
 	/* Make sure nobody tries to free the keeper block */
 	Assert(!IsKeeperBlock(set, block));
 
@@ -635,7 +638,7 @@ BumpBlockFree(BumpContext *set, BumpBlock *block)
 	/* As in aset.c, free block-header vchunks explicitly */
 	VALGRIND_MEMPOOL_FREE(set, block);
 
-	free(block);
+	MemoryContextBlockFree((MemoryContext) set, block, blksize);
 }
 
 /*

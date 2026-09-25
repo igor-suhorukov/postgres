@@ -175,6 +175,9 @@ MemoryContext CurTransactionContext = NULL;
 /* This is a transient link to the active portal's memory context: */
 MemoryContext PortalContext = NULL;
 
+/* Told of each block a context takes or gives back; see memutils.h */
+memory_block_alloc_hook_type memory_block_alloc_hook = NULL;
+
 /* Is memory context logging currently in progress? */
 static bool LogMemoryContextInProgress = false;
 
@@ -1222,6 +1225,59 @@ void
 MemoryContextSizeFailure(MemoryContext context, Size size, int flags)
 {
 	elog(ERROR, "invalid memory alloc request size %zu", size);
+}
+
+/*
+ * MemoryContextBlockMallocHooked
+ *		A block's malloc() for a MemoryContextMethods implementation, while
+ *		memory_block_alloc_hook is set: the hook is asked first, and told if
+ *		malloc() then fails.
+ */
+void *
+MemoryContextBlockMallocHooked(MemoryContext context, Size size)
+{
+	void	   *block;
+
+	if (!memory_block_alloc_hook(context, 0, size))
+		return NULL;
+
+	block = malloc(size);
+	if (block == NULL)
+		(void) memory_block_alloc_hook(context, size, 0);
+
+	return block;
+}
+
+/*
+ * MemoryContextBlockFreeHooked
+ *		The same for a block's free(): the hook is told first.
+ */
+void
+MemoryContextBlockFreeHooked(MemoryContext context, void *block, Size size)
+{
+	(void) memory_block_alloc_hook(context, size, 0);
+	free(block);
+}
+
+/*
+ * MemoryContextBlockReallocHooked
+ *		The same for a block's realloc(), which leaves the block as it was
+ *		where it fails.
+ */
+void *
+MemoryContextBlockReallocHooked(MemoryContext context, void *block,
+								Size oldsize, Size newsize)
+{
+	void	   *newblock;
+
+	if (!memory_block_alloc_hook(context, oldsize, newsize))
+		return NULL;
+
+	newblock = realloc(block, newsize);
+	if (newblock == NULL)
+		(void) memory_block_alloc_hook(context, newsize, oldsize);
+
+	return newblock;
 }
 
 /*

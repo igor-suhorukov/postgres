@@ -361,7 +361,8 @@ SlabContextCreate(MemoryContext parent,
 
 
 
-	slab = (SlabContext *) malloc(Slab_CONTEXT_HDRSZ(chunksPerBlock));
+	slab = (SlabContext *) MemoryContextBlockMalloc(NULL,
+													Slab_CONTEXT_HDRSZ(chunksPerBlock));
 	if (slab == NULL)
 	{
 		MemoryContextStats(TopMemoryContext);
@@ -460,7 +461,7 @@ SlabReset(MemoryContext context)
 		/* As in aset.c, free block-header vchunks explicitly */
 		VALGRIND_MEMPOOL_FREE(slab, block);
 
-		free(block);
+		MemoryContextBlockFree(context, block, slab->blockSize);
 		context->mem_allocated -= slab->blockSize;
 	}
 
@@ -480,7 +481,7 @@ SlabReset(MemoryContext context)
 			/* As in aset.c, free block-header vchunks explicitly */
 			VALGRIND_MEMPOOL_FREE(slab, block);
 
-			free(block);
+			MemoryContextBlockFree(context, block, slab->blockSize);
 			context->mem_allocated -= slab->blockSize;
 		}
 	}
@@ -512,7 +513,8 @@ SlabDelete(MemoryContext context)
 	VALGRIND_DESTROY_MEMPOOL(context);
 
 	/* And free the context header */
-	free(context);
+	MemoryContextBlockFree(context, context,
+						   Slab_CONTEXT_HDRSZ(((SlabContext *) context)->chunksPerBlock));
 }
 
 /*
@@ -588,7 +590,8 @@ SlabAllocFromNewBlock(MemoryContext context, Size size, int flags)
 	}
 	else
 	{
-		block = (SlabBlock *) malloc(slab->blockSize);
+		block = (SlabBlock *) MemoryContextBlockMalloc(context,
+													   slab->blockSize);
 
 		if (unlikely(block == NULL))
 			return MemoryContextAllocationFailure(context, size, flags);
@@ -835,7 +838,7 @@ SlabFree(void *pointer)
 			/* As in aset.c, free block-header vchunks explicitly */
 			VALGRIND_MEMPOOL_FREE(slab, block);
 
-			free(block);
+			MemoryContextBlockFree(&slab->header, block, slab->blockSize);
 			slab->header.mem_allocated -= slab->blockSize;
 		}
 

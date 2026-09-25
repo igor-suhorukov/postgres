@@ -208,7 +208,7 @@ GenerationContextCreate(MemoryContext parent,
 	 * Allocate the initial block.  Unlike other generation.c blocks, it
 	 * starts with the context header and its block header follows that.
 	 */
-	set = (GenerationContext *) malloc(allocSize);
+	set = (GenerationContext *) MemoryContextBlockMalloc(NULL, allocSize);
 	if (set == NULL)
 	{
 		MemoryContextStats(TopMemoryContext);
@@ -350,7 +350,8 @@ GenerationDelete(MemoryContext context)
 	VALGRIND_DESTROY_MEMPOOL(context);
 
 	/* And free the context header and keeper block */
-	free(context);
+	MemoryContextBlockFree(context, context,
+						   MAXALIGN(sizeof(GenerationContext)) + KeeperBlock((GenerationContext *) context)->blksize);
 }
 
 /*
@@ -381,7 +382,7 @@ GenerationAllocLarge(MemoryContext context, Size size, int flags)
 	required_size = chunk_size + Generation_CHUNKHDRSZ;
 	blksize = required_size + Generation_BLOCKHDRSZ;
 
-	block = (GenerationBlock *) malloc(blksize);
+	block = (GenerationBlock *) MemoryContextBlockMalloc(context, blksize);
 	if (block == NULL)
 		return MemoryContextAllocationFailure(context, size, flags);
 
@@ -505,7 +506,7 @@ GenerationAllocFromNewBlock(MemoryContext context, Size size, int flags,
 	if (blksize < required_size)
 		blksize = pg_nextpower2_size_t(required_size);
 
-	block = (GenerationBlock *) malloc(blksize);
+	block = (GenerationBlock *) MemoryContextBlockMalloc(context, blksize);
 
 	if (block == NULL)
 		return MemoryContextAllocationFailure(context, size, flags);
@@ -689,6 +690,8 @@ GenerationBlockFreeBytes(GenerationBlock *block)
 static inline void
 GenerationBlockFree(GenerationContext *set, GenerationBlock *block)
 {
+	Size		blksize = block->blksize;
+
 	/* Make sure nobody tries to free the keeper block */
 	Assert(!IsKeeperBlock(set, block));
 	/* We shouldn't be freeing the freeblock either */
@@ -706,7 +709,7 @@ GenerationBlockFree(GenerationContext *set, GenerationBlock *block)
 	/* As in aset.c, free block-header vchunks explicitly */
 	VALGRIND_MEMPOOL_FREE(set, block);
 
-	free(block);
+	MemoryContextBlockFree((MemoryContext) set, block, blksize);
 }
 
 /*

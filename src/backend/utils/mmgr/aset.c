@@ -441,7 +441,7 @@ AllocSetContextCreateInternal(MemoryContext parent,
 	 * Allocate the initial block.  Unlike other aset.c blocks, it starts with
 	 * the context header and its block header follows that.
 	 */
-	set = (AllocSet) malloc(firstBlockSize);
+	set = (AllocSet) MemoryContextBlockMalloc(NULL, firstBlockSize);
 	if (set == NULL)
 	{
 		if (TopMemoryContext)
@@ -588,6 +588,8 @@ AllocSetReset(MemoryContext context)
 		}
 		else
 		{
+			Size		blksize = block->endptr - ((char *) block);
+
 			/* Normal case, release the block */
 			context->mem_allocated -= block->endptr - ((char *) block);
 
@@ -602,7 +604,7 @@ AllocSetReset(MemoryContext context)
 			 */
 			VALGRIND_MEMPOOL_FREE(set, block);
 
-			free(block);
+			MemoryContextBlockFree(context, block, blksize);
 		}
 		block = next;
 	}
@@ -677,7 +679,8 @@ AllocSetDelete(MemoryContext context)
 				VALGRIND_DESTROY_MEMPOOL(oldset);
 
 				/* All that remains is to free the header/initial block */
-				free(oldset);
+				MemoryContextBlockFree(&oldset->header, oldset,
+									   KeeperBlock(oldset)->endptr - ((char *) oldset));
 			}
 			Assert(freelist->num_free == 0);
 		}
@@ -694,6 +697,7 @@ AllocSetDelete(MemoryContext context)
 	while (block != NULL)
 	{
 		AllocBlock	next = block->next;
+		Size		blksize = block->endptr - ((char *) block);
 
 		if (!IsKeeperBlock(set, block))
 			context->mem_allocated -= block->endptr - ((char *) block);
@@ -706,7 +710,7 @@ AllocSetDelete(MemoryContext context)
 		{
 			/* As in AllocSetReset, free block-header vchunks explicitly */
 			VALGRIND_MEMPOOL_FREE(set, block);
-			free(block);
+			MemoryContextBlockFree(context, block, blksize);
 		}
 
 		block = next;
@@ -722,7 +726,7 @@ AllocSetDelete(MemoryContext context)
 	VALGRIND_DESTROY_MEMPOOL(set);
 
 	/* Finally, free the context header, including the keeper block */
-	free(set);
+	MemoryContextBlockFree(context, set, keepersize);
 }
 
 /*
@@ -751,7 +755,7 @@ AllocSetAllocLarge(MemoryContext context, Size size, int flags)
 #endif
 
 	blksize = chunk_size + ALLOC_BLOCKHDRSZ + ALLOC_CHUNKHDRSZ;
-	block = (AllocBlock) malloc(blksize);
+	block = (AllocBlock) MemoryContextBlockMalloc(context, blksize);
 	if (block == NULL)
 		return MemoryContextAllocationFailure(context, size, flags);
 
@@ -947,7 +951,7 @@ AllocSetAllocFromNewBlock(MemoryContext context, Size size, int flags,
 		blksize <<= 1;
 
 	/* Try to allocate it */
-	block = (AllocBlock) malloc(blksize);
+	block = (AllocBlock) MemoryContextBlockMalloc(context, blksize);
 
 	/*
 	 * We could be asking for pretty big blocks here, so cope if malloc fails.
@@ -958,7 +962,7 @@ AllocSetAllocFromNewBlock(MemoryContext context, Size size, int flags,
 		blksize >>= 1;
 		if (blksize < required_size)
 			break;
-		block = (AllocBlock) malloc(blksize);
+		block = (AllocBlock) MemoryContextBlockMalloc(context, blksize);
 	}
 
 	if (block == NULL)
@@ -1116,6 +1120,7 @@ AllocSetFree(void *pointer)
 	{
 		/* Release single-chunk block. */
 		AllocBlock	block = ExternalChunkGetBlock(chunk);
+		Size		blksize = block->endptr - ((char *) block);
 
 		/*
 		 * Try to verify that we have a sane block pointer: the block header
@@ -1153,7 +1158,7 @@ AllocSetFree(void *pointer)
 		/* As in AllocSetReset, free block-header vchunks explicitly */
 		VALGRIND_MEMPOOL_FREE(set, block);
 
-		free(block);
+		MemoryContextBlockFree(&set->header, block, blksize);
 	}
 	else
 	{
@@ -1292,7 +1297,8 @@ AllocSetRealloc(void *pointer, Size size, int flags)
 		blksize = chksize + ALLOC_BLOCKHDRSZ + ALLOC_CHUNKHDRSZ;
 		oldblksize = block->endptr - ((char *) block);
 
-		newblock = (AllocBlock) realloc(block, blksize);
+		newblock = (AllocBlock) MemoryContextBlockRealloc(&set->header, block,
+														  oldblksize, blksize);
 		if (newblock == NULL)
 		{
 			/* Disallow access to the chunk header. */
