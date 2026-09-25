@@ -87,6 +87,12 @@ char	   *default_tablespace = NULL;
 char	   *temp_tablespaces = NULL;
 bool		allow_in_place_tablespaces = false;
 
+/* Hook for an extension to choose this server's directory of a tablespace */
+tablespace_location_hook_type tablespace_location_hook = NULL;
+
+/* Hook for an extension to remove the directory it chose, as the link goes */
+tablespace_location_drop_hook_type tablespace_location_drop_hook = NULL;
+
 Oid			binary_upgrade_next_pg_tablespace_oid = InvalidOid;
 
 static void create_tablespace_directories(const char *location,
@@ -598,6 +604,13 @@ create_tablespace_directories(const char *location, const Oid tablespaceoid)
 	 */
 	in_place = strlen(location) == 0;
 
+	/*
+	 * An extension may put this server's directory elsewhere than the
+	 * location the statement or its WAL record gives.
+	 */
+	if (!in_place && tablespace_location_hook)
+		location = (*tablespace_location_hook) (location, tablespaceoid);
+
 	if (in_place)
 	{
 		if (MakePGDirectory(linkloc) < 0 && errno != EEXIST)
@@ -831,6 +844,13 @@ remove_symlink:
 	}
 	else if (S_ISLNK(st.st_mode))
 	{
+		/*
+		 * An extension that chose the directory the link points to may
+		 * remove it, now emptied, before the link goes.
+		 */
+		if (tablespace_location_drop_hook)
+			(*tablespace_location_drop_hook) (linkloc, tablespaceoid, redo);
+
 		if (unlink(linkloc) < 0)
 		{
 			int			saved_errno = errno;

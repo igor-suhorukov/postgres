@@ -23,6 +23,34 @@ extern PGDLLIMPORT char *default_tablespace;
 extern PGDLLIMPORT char *temp_tablespaces;
 extern PGDLLIMPORT bool allow_in_place_tablespaces;
 
+/*
+ * Hook for an extension that puts this server's directory of a tablespace
+ * elsewhere than the location CREATE TABLESPACE gave -- a directory of its
+ * own under the location, say, where servers share a machine and would
+ * otherwise share the directory.  It is given the location, which the WAL
+ * record carries too, and returns the directory pg_tblspc links to: one it
+ * made, or one whose absence is then reported as the location's would be.
+ * It is asked where the directories are made, by CREATE TABLESPACE and by
+ * its redo, and not for an in-place tablespace, which is the server's own.
+ */
+typedef const char *(*tablespace_location_hook_type) (const char *location,
+													  Oid tablespaceoid);
+extern PGDLLIMPORT tablespace_location_hook_type tablespace_location_hook;
+
+/*
+ * Hook for the same extension, as the link pg_tblspc/<oid> is removed: by
+ * DROP TABLESPACE, and by its redo, once the tablespace's own directories
+ * are gone.  It is given the link, which it may read, so that it may remove
+ * the directory the link points to if it is one tablespace_location_hook
+ * made, now empty.  "redo" is as destroy_tablespace_directories() has it:
+ * where it is true, a problem is to be reported as a LOG, not an ERROR.
+ * It is not asked for an in-place tablespace, whose directory is the link.
+ */
+typedef void (*tablespace_location_drop_hook_type) (const char *linkloc,
+													 Oid tablespaceoid,
+													 bool redo);
+extern PGDLLIMPORT tablespace_location_drop_hook_type tablespace_location_drop_hook;
+
 /* XLOG stuff */
 #define XLOG_TBLSPC_CREATE		0x00
 #define XLOG_TBLSPC_DROP		0x10
