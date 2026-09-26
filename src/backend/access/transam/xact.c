@@ -329,6 +329,9 @@ typedef struct SubXactCallbackItem
 
 static SubXactCallbackItem *SubXact_callbacks = NULL;
 
+/* Hook for extensions, between a commit's record and its end: see xact.h */
+xact_commit_recorded_hook_type xact_commit_recorded_hook = NULL;
+
 
 /* local function prototypes */
 static void AssignTransactionId(TransactionState s);
@@ -2428,6 +2431,13 @@ CommitTransaction(void)
 	}
 
 	TRACE_POSTGRESQL_TRANSACTION_COMMIT(MyProc->vxid.lxid);
+
+	/*
+	 * An extension may finish work the commit decided, elsewhere, while the
+	 * other backends still see the transaction in progress.
+	 */
+	if (xact_commit_recorded_hook && !is_parallel_worker)
+		xact_commit_recorded_hook(latestXid);
 
 	/*
 	 * Let others know about no transaction in progress by me. Note that this

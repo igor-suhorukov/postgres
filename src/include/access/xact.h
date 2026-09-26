@@ -149,6 +149,19 @@ typedef enum
 typedef void (*SubXactCallback) (SubXactEvent event, SubTransactionId mySubid,
 								 SubTransactionId parentSubid, void *arg);
 
+/*
+ * Called by CommitTransaction() for a transaction that is not a parallel
+ * worker's, once RecordTransactionCommit() has made its commit durable --
+ * and waited for synchronous replication -- and before
+ * ProcArrayEndTransaction() ends it for the other backends, which see it in
+ * progress for as long as the hook runs.  latestXid is what
+ * RecordTransactionCommit() returned, InvalidTransactionId for a transaction
+ * that had no XID.  The transaction is committed, so the hook must not raise
+ * an error; interrupts are held.
+ */
+typedef void (*xact_commit_recorded_hook_type) (TransactionId latestXid);
+extern PGDLLIMPORT xact_commit_recorded_hook_type xact_commit_recorded_hook;
+
 /* Data structure for Save/RestoreTransactionCharacteristics */
 typedef struct SavedTransactionCharacteristics
 {
