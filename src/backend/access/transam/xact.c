@@ -332,6 +332,9 @@ static SubXactCallbackItem *SubXact_callbacks = NULL;
 /* Hook for extensions, between a commit's record and its end: see xact.h */
 xact_commit_recorded_hook_type xact_commit_recorded_hook = NULL;
 
+/* Set by an extension, an abort run again after its end: see xact.h */
+bool		XactAbortAgainAfterEnd = false;
+
 
 /* local function prototypes */
 static void AssignTransactionId(TransactionState s);
@@ -1814,6 +1817,15 @@ RecordTransactionAbort(bool isSubXact)
 	TransactionId *children;
 	TimestampTz xact_time;
 	bool		replorigin;
+
+	/*
+	 * An extension may raise an error after ProcArrayEndTransaction(), which
+	 * brings AbortTransaction() back here: the abort is recorded already, and
+	 * the proc array holds the XID no longer.
+	 */
+	if (XactAbortAgainAfterEnd && !isSubXact &&
+		!TransactionIdIsValid(MyProc->xid))
+		xid = InvalidTransactionId;
 
 	/*
 	 * If we haven't been assigned an XID, nobody will care whether we aborted

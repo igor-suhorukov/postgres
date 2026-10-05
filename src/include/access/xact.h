@@ -88,6 +88,19 @@ extern PGDLLIMPORT TransactionId CheckXidAlive;
 extern PGDLLIMPORT bool bsysscan;
 
 /*
+ * Set by an extension whose work may raise an error in AbortTransaction()
+ * once ProcArrayEndTransaction() has ended the transaction -- in an
+ * XACT_EVENT_ABORT callback, say -- which has AbortTransaction() run again.
+ * The transaction's abort is not recorded a second time then: for a
+ * top-level transaction whose XID the proc array no longer holds,
+ * RecordTransactionAbort() writes no abort record and returns
+ * InvalidTransactionId, as for one that had no XID, and
+ * ProcArrayEndTransaction() is not asked to end the XID again.  Off by
+ * default.
+ */
+extern PGDLLIMPORT bool XactAbortAgainAfterEnd;
+
+/*
  * Miscellaneous flag bits to record events which occur on the top level
  * transaction. These flags are only persisted in MyXactFlags and are intended
  * so we remember to do certain things later in the transaction. This is
