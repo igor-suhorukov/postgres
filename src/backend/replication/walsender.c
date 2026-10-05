@@ -149,6 +149,9 @@ int			wal_sender_shutdown_timeout = -1;	/* maximum time to wait during
 
 bool		log_replication_commands = false;
 
+/* Hook for extensions, a physical slot's restart_lsn: see walsender.h */
+physical_slot_restart_lsn_hook_type physical_slot_restart_lsn_hook = NULL;
+
 /*
  * State for WalSndWakeupRequest
  */
@@ -2499,6 +2502,11 @@ PhysicalConfirmReceivedLocation(XLogRecPtr lsn)
 	ReplicationSlot *slot = MyReplicationSlot;
 
 	Assert(XLogRecPtrIsValid(lsn));
+
+	/* An extension may keep the standby's WAL from further back */
+	if (physical_slot_restart_lsn_hook)
+		lsn = physical_slot_restart_lsn_hook(lsn);
+
 	SpinLockAcquire(&slot->mutex);
 	if (slot->data.restart_lsn != lsn)
 	{

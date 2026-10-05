@@ -36,6 +36,17 @@ extern PGDLLIMPORT int wal_sender_timeout;
 extern PGDLLIMPORT int wal_sender_shutdown_timeout;
 extern PGDLLIMPORT bool log_replication_commands;
 
+/*
+ * Called by the walsender of a physical replication slot as its standby
+ * confirms having flushed WAL up to flushed, for the LSN the slot's
+ * restart_lsn is to move to, which is flushed itself without the hook.  The
+ * slot is MyReplicationSlot, whose fields its walsender may read without the
+ * slot's spinlock; returning its restart_lsn leaves it where it is.  What is
+ * returned must be a valid LSN, and none past flushed.
+ */
+typedef XLogRecPtr (*physical_slot_restart_lsn_hook_type) (XLogRecPtr flushed);
+extern PGDLLIMPORT physical_slot_restart_lsn_hook_type physical_slot_restart_lsn_hook;
+
 extern void InitWalSender(void);
 extern bool exec_replication_command(const char *cmd_string);
 extern void WalSndErrorCleanup(void);
